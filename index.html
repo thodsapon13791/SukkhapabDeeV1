@@ -3,1389 +3,1020 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>สุขภาพดี V4 — ติดตามสุขภาพส่วนตัว</title>
-<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<title>สุขภาพดี V5</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-<!-- Firebase SDK -->
+
+<!-- Firebase -->
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc,
-         query, where, orderBy, serverTimestamp, onSnapshot }
+import { getFirestore, doc, setDoc, getDoc, collection, addDoc, getDocs,
+         deleteDoc, query, orderBy, serverTimestamp }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
-// ─── Firebase Config ───────────────────────────────────────────────
-const FB_CONFIG = {
-  apiKey:            "AIzaSyCCjf_j11tXVfqcBbbMcj-n3WnIUUXyoyE",
-  authDomain:        "sukkhapabdeev1.firebaseapp.com",
-  projectId:         "sukkhapabdeev1",
-  storageBucket:     "sukkhapabdeev1.firebasestorage.app",
-  messagingSenderId: "455632584751",
-  appId:             "1:455632584751:web:562807b827b19c1ebe86da",
-  measurementId:     "G-EET6KBBLY4"
+const FB = {
+  apiKey:"AIzaSyCCjf_j11tXVfqcBbbMcj-n3WnIUUXyoyE",
+  authDomain:"sukkhapabdeev1.firebaseapp.com",
+  projectId:"sukkhapabdeev1",
+  storageBucket:"sukkhapabdeev1.firebasestorage.app",
+  messagingSenderId:"455632584751",
+  appId:"1:455632584751:web:562807b827b19c1ebe86da"
 };
-// ───────────────────────────────────────────────────────────────────
-
-const app  = initializeApp(FB_CONFIG);
+const app  = initializeApp(FB);
 const auth = getAuth(app);
 const db   = getFirestore(app);
 
-// ─── AUTH STATE ───────────────────────────────────────────────────────
-onAuthStateChanged(auth, user => {
+const col = (name) => collection(db,'users',window._uid,name);
+const todayStr = () => new Date().toISOString().slice(0,10);
+
+// ── AUTH ──────────────────────────────────────────
+onAuthStateChanged(auth, async user => {
   if (user) {
     window._uid = user.uid;
     document.getElementById('login-screen').style.display = 'none';
-    document.getElementById('app-screen').style.display  = 'flex';
-    document.getElementById('user-name-display').textContent = user.displayName || 'ผู้ใช้';
-    document.getElementById('user-avatar-text').textContent  =
-      (user.displayName||'U').slice(0,2).toUpperCase();
-    if (user.photoURL) {
-      const av = document.getElementById('user-avatar-img');
-      av.src = user.photoURL; av.style.display = 'block';
-      document.getElementById('user-avatar-text').style.display = 'none';
+    // Load profile then decide: onboarding or app
+    const snap = await getDoc(doc(db,'users',user.uid,'meta','profile'));
+    if (snap.exists()) {
+      window._profile = snap.data();
+      window._startApp();
+    } else {
+      document.getElementById('onboarding-page').style.display = 'flex';
     }
-    window._loadAllData();
   } else {
     window._uid = null;
     document.getElementById('login-screen').style.display = 'flex';
-    document.getElementById('app-screen').style.display   = 'none';
+    document.getElementById('onboarding-page').style.display = 'none';
+    document.getElementById('main-app').style.display = 'none';
   }
 });
 
-// ─── LOGIN / LOGOUT ──────────────────────────────────────────────────
 window._loginGoogle = async () => {
-  try {
-    await signInWithPopup(auth, new GoogleAuthProvider());
-  } catch(e) { alert('Login ไม่สำเร็จ: ' + e.message); }
+  try { await signInWithPopup(auth, new GoogleAuthProvider()); }
+  catch(e) { alert('Login ไม่สำเร็จ: '+e.message); }
 };
 window._logout = async () => {
   await signOut(auth);
-  window._uid = null;
+  document.getElementById('main-app').style.display = 'none';
+  document.getElementById('login-screen').style.display = 'flex';
 };
 
-// ─── HELPERS ──────────────────────────────────────────────────────────
-const col = (name) => collection(db, 'users', window._uid, name);
-const todayStr = () => new Date().toISOString().slice(0,10);
-
-// ─── SAVE WEIGHT ──────────────────────────────────────────────────────
-window._saveWeight = async () => {
-  const w   = parseFloat(document.getElementById('inp-weight').value);
-  const fat = parseFloat(document.getElementById('inp-fat').value)   || null;
-  const waist = parseFloat(document.getElementById('inp-waist').value) || null;
-  const note  = document.getElementById('inp-note').value || '';
-  const date  = document.getElementById('inp-date-w').value || todayStr();
-  if (!w || isNaN(w)) { alert('กรุณาใส่น้ำหนัก'); return; }
-  const bmi = Math.round(w / ((172/100)**2) * 10) / 10;
-  try {
-    await addDoc(col('weight_logs'), { date, weight_kg:w, fat_pct:fat, waist_cm:waist, bmi, note, ts:serverTimestamp() });
-    closeModal('modal-weight');
-    window._showToastFB('บันทึกน้ำหนัก ' + w + ' กก. สำเร็จ ✓');
-    window._loadWeight();
-  } catch(e) { alert('บันทึกไม่สำเร็จ: '+e.message); }
+// ── SAVE PROFILE ─────────────────────────────────
+window._saveProfileFB = async (p) => {
+  await setDoc(doc(db,'users',window._uid,'meta','profile'), p);
+  window._profile = p;
 };
 
-// ─── SAVE FOOD ────────────────────────────────────────────────────────
-window._saveFood = async () => {
-  const name = document.getElementById('inp-food-name').value.trim();
-  const meal = document.getElementById('inp-meal').value;
-  const kcal = parseFloat(document.getElementById('inp-kcal').value) || 0;
-  const prot = parseFloat(document.getElementById('inp-prot').value) || 0;
-  const carb = parseFloat(document.getElementById('inp-carb').value) || 0;
-  const fat  = parseFloat(document.getElementById('inp-fat2').value) || 0;
-  const date = document.getElementById('inp-date-f').value || todayStr();
-  if (!name) { alert('กรุณาใส่ชื่ออาหาร'); return; }
-  try {
-    await addDoc(col('food_logs'), { date, meal, name, kcal, prot, carb, fat, ts:serverTimestamp() });
-    closeModal('modal-food');
-    window._showToastFB('บันทึกอาหาร "' + name + '" สำเร็จ ✓');
-    window._loadFood();
-  } catch(e) { alert('บันทึกไม่สำเร็จ: '+e.message); }
-};
-
-// ─── SAVE EXERCISE ────────────────────────────────────────────────────
-window._saveExercise = async () => {
-  const type = document.getElementById('inp-extype').value;
-  const min  = parseInt(document.getElementById('inp-exmin').value) || 0;
-  const kcal = parseInt(document.getElementById('inp-exkcal').value) || Math.round(min * 7);
-  const km   = parseFloat(document.getElementById('inp-exkm').value) || null;
-  const note = document.getElementById('inp-exnote').value || '';
-  const date = document.getElementById('inp-date-e').value || todayStr();
-  if (!min) { alert('กรุณาใส่ระยะเวลา'); return; }
-  try {
-    await addDoc(col('exercise_logs'), { date, type, min, kcal, km, note, ts:serverTimestamp() });
-    window._showToastFB('บันทึกออกกำลังกาย ' + min + ' นาที สำเร็จ ✓');
-    window._loadExercise();
-  } catch(e) { alert('บันทึกไม่สำเร็จ: '+e.message); }
-};
-
-// ─── SAVE WATER ───────────────────────────────────────────────────────
-window._saveWater = async (ml) => {
+// ── WEIGHT ───────────────────────────────────────
+window._saveWeight = async (kg, note) => {
   const date = todayStr();
-  try {
-    await addDoc(col('water_logs'), { date, ml, ts:serverTimestamp() });
-    window._showToastFB('บันทึกน้ำ +' + ml + ' ml ✓');
-    window._loadWater();
-  } catch(e) { alert('บันทึกไม่สำเร็จ: '+e.message); }
+  const bmi  = Math.round(kg/((window._profile.height/100)**2)*10)/10;
+  await setDoc(doc(db,'users',window._uid,'weight_logs',date), {date,kg,bmi,note,ts:serverTimestamp()});
+};
+window._loadWeights = async () => {
+  const snap = await getDocs(query(col('weight_logs'), orderBy('date','asc')));
+  return snap.docs.map(d=>({id:d.id,...d.data()}));
 };
 
-// ─── DELETE DOC ──────────────────────────────────────────────────────
-window._deleteDoc = async (colName, id) => {
-  if (!confirm('ยืนยันลบรายการนี้?')) return;
-  await deleteDoc(doc(db, 'users', window._uid, colName, id));
-  window._showToastFB('ลบรายการสำเร็จ ✓');
-  if(colName==='weight_logs') window._loadWeight();
-  if(colName==='food_logs')   window._loadFood();
-  if(colName==='exercise_logs') window._loadExercise();
-  if(colName==='water_logs')  window._loadWater();
+// ── FOOD ─────────────────────────────────────────
+window._saveFood = async (date, meal, menu, cal) => {
+  await addDoc(col('food_logs'), {date,meal,menu,cal,ts:serverTimestamp()});
+};
+window._loadFoods = async (date) => {
+  const snap = await getDocs(query(col('food_logs'), orderBy('ts','asc')));
+  return snap.docs.map(d=>({id:d.id,...d.data()})).filter(r=>r.date===date);
+};
+window._deleteFood = async (id) => { await deleteDoc(doc(db,'users',window._uid,'food_logs',id)); };
+
+// ── EXERCISE ─────────────────────────────────────
+window._saveExercise = async (date, activity, duration, burned) => {
+  await addDoc(col('exercise_logs'), {date,activity,duration,burned,ts:serverTimestamp()});
+};
+window._loadExercises = async (date) => {
+  const snap = await getDocs(query(col('exercise_logs'), orderBy('ts','asc')));
+  return snap.docs.map(d=>({id:d.id,...d.data()})).filter(r=>r.date===date);
+};
+window._deleteExercise = async (id) => { await deleteDoc(doc(db,'users',window._uid,'exercise_logs',id)); };
+
+// ── SLEEP ────────────────────────────────────────
+window._saveSleep = async (date, sleep, wake, hours, quality) => {
+  await setDoc(doc(db,'users',window._uid,'sleep_logs',date), {date,sleep,wake,hours,quality,ts:serverTimestamp()});
+};
+window._loadSleeps = async () => {
+  const snap = await getDocs(query(col('sleep_logs'), orderBy('date','asc')));
+  return snap.docs.map(d=>({id:d.id,...d.data()}));
 };
 
-// ─── LOAD WEIGHT ─────────────────────────────────────────────────────
-window._loadWeight = async () => {
-  if(!window._uid) return;
-  const snap = await getDocs(query(col('weight_logs'), orderBy('date','desc')));
-  const rows = snap.docs.map(d=>({id:d.id,...d.data()}));
-  window.WEIGHT_DATA = rows.map(r=>({
-    date: new Date(r.date+'T00:00:00'), w:r.weight_kg, fat:r.fat_pct,
-    waist:r.waist_cm, note:r.note||'', _id:r.id
-  }));
-  // update dashboard metric
-  if(rows[0]){
-    document.querySelectorAll('.dash-weight').forEach(el=>el.textContent=rows[0].weight_kg+' กก.');
-  }
-  filterHistory('weight');
-};
-
-// ─── LOAD FOOD ───────────────────────────────────────────────────────
-window._loadFood = async () => {
-  if(!window._uid) return;
-  const snap = await getDocs(query(col('food_logs'), orderBy('date','desc'), orderBy('ts','desc')));
-  const rows = snap.docs.map(d=>({id:d.id,...d.data()}));
-  window.FOOD_DATA = rows.map(r=>({
-    date:new Date(r.date+'T00:00:00'), meal:r.meal, name:r.name,
-    kcal:r.kcal, p:r.prot, c:r.carb, f:r.fat, _id:r.id
-  }));
-  filterHistory('food');
-};
-
-// ─── LOAD EXERCISE ───────────────────────────────────────────────────
-window._loadExercise = async () => {
-  if(!window._uid) return;
-  const snap = await getDocs(query(col('exercise_logs'), orderBy('date','desc')));
-  const rows = snap.docs.map(d=>({id:d.id,...d.data()}));
-  window.EXERCISE_DATA = rows.map(r=>({
-    date:new Date(r.date+'T00:00:00'), type:r.type, min:r.min,
-    kcal:r.kcal, km:r.km||null, _id:r.id
-  }));
-  filterHistory('exercise');
-};
-
-// ─── LOAD WATER ──────────────────────────────────────────────────────
-window._loadWater = async () => {
-  if(!window._uid) return;
-  const snap = await getDocs(query(col('water_logs'), orderBy('date','desc')));
-  const byDay = {};
-  snap.docs.forEach(d=>{
-    const r=d.data();
-    if(!byDay[r.date]) byDay[r.date]={date:r.date, ml:0, goal:3000};
-    byDay[r.date].ml += r.ml;
-  });
-  window.WATER_HISTORY = Object.values(byDay).map(r=>({
-    date:new Date(r.date+'T00:00:00'), ml:r.ml, goal:r.goal
-  })).sort((a,b)=>b.date-a.date);
-  // update today's widget
-  const today = todayStr();
-  const todayMl = snap.docs.filter(d=>d.data().date===today).reduce((s,d)=>s+d.data().ml,0);
-  window.waterMl = todayMl;
-  const p = todayMl/3000;
-  const disp = document.getElementById('water-display');
-  const prog = document.getElementById('water-prog');
-  const ring = document.getElementById('water-ring-fill');
-  const big  = document.getElementById('water-big-display');
-  const bigRing = document.getElementById('water-big-ring');
-  if(disp) disp.textContent = (todayMl/1000).toFixed(1);
-  if(prog) prog.style.width = Math.round(p*100)+'%';
-  if(ring) ring.setAttribute('stroke-dashoffset', 175.9*(1-p));
-  if(big)  big.textContent  = todayMl.toLocaleString('th-TH');
-  if(bigRing) bigRing.setAttribute('stroke-dashoffset', 502.7*(1-p));
-  filterHistory('water');
-};
-
-window._loadAllData = () => {
-  window._loadWeight();
-  window._loadFood();
-  window._loadExercise();
-  window._loadWater();
-};
-
-window._showToastFB = (msg) => {
-  const t=document.getElementById('toast');
-  document.getElementById('toast-msg').textContent=msg;
-  t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'),2800);
+window._toast = (msg) => {
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.classList.add('show');
+  clearTimeout(window._toastT);
+  window._toastT=setTimeout(()=>el.classList.remove('show'),2500);
 };
 </script>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --teal:#1D9E75;--teal2:#0F6E56;--teal-l:#E1F5EE;--teal-ll:#F0FAF6;
-  --amber:#EF9F27;--amber-l:#FAEEDA;
-  --coral:#D85A30;--coral-l:#FAECE7;
-  --blue:#378ADD;--blue-l:#E6F1FB;
-  --purple:#7F77DD;--purple-l:#EEEDFE;
-  --red:#E24B4A;--red-l:#FCEBEB;
-  --bg:#F7F8FA;--card:#fff;--border:#E8EAF0;
-  --text1:#1A1D2E;--text2:#5A5F7D;--text3:#9CA3AF;
-  --shadow:0 1px 3px rgba(0,0,0,.07),0 4px 12px rgba(0,0,0,.04);
-  --r:12px;--r2:8px;
-}
-body{font-family:'Sarabun',sans-serif;background:var(--bg);color:var(--text1);font-size:14px;line-height:1.5}
-.app{display:flex;flex-direction:column;height:100vh;overflow:hidden}
-/* TOP NAVBAR */
-.topnav{background:var(--card);border-bottom:1px solid var(--border);flex-shrink:0;z-index:50}
-.topnav-header{display:flex;align-items:center;justify-content:space-between;padding:0 16px;height:56px}
-.logo-row{display:flex;align-items:center;gap:10px}
-.logo-icon{width:34px;height:34px;background:linear-gradient(135deg,var(--teal),var(--teal2));border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.logo-icon svg{width:18px;height:18px;fill:white}
-.logo-name{font-size:16px;font-weight:700;color:var(--text1)}
-.logo-sub{font-size:10px;color:var(--text3)}
-.topnav-right{display:flex;align-items:center;gap:8px}
-.avatar{width:32px;height:32px;border-radius:50%;background:var(--teal-l);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--teal2);flex-shrink:0;cursor:pointer}
-/* NAV SCROLL ROW */
-.nav-scroll{display:flex;overflow-x:auto;padding:0 12px 0;gap:2px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
-.nav-scroll::-webkit-scrollbar{display:none}
-.nav-item{display:flex;align-items:center;gap:6px;padding:8px 12px;font-size:12.5px;color:var(--text2);cursor:pointer;transition:all .15s;white-space:nowrap;border-bottom:2px solid transparent;flex-shrink:0}
-.nav-item:hover{color:var(--text1)}
-.nav-item.active{color:var(--teal2);font-weight:600;border-bottom-color:var(--teal)}
-.nav-icon{width:16px;height:16px;flex-shrink:0;opacity:.7}
-.nav-item.active .nav-icon{opacity:1}
-/* MAIN */
-.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
-.topbar{background:var(--card);border-bottom:1px solid var(--border);padding:0 16px;height:52px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
-.page-title{font-size:15px;font-weight:700;color:var(--text1)}
-.page-sub{font-size:11px;color:var(--text3);margin-top:1px}
-.topbar-actions{display:flex;gap:6px;align-items:center}
-.btn{padding:6px 12px;border-radius:var(--r2);border:1px solid var(--border);background:var(--card);color:var(--text1);cursor:pointer;font-size:12.5px;font-family:inherit;display:inline-flex;align-items:center;gap:5px;transition:all .15s;font-weight:500}
-.btn:hover{background:var(--bg);border-color:#ccc}
-.btn-primary{background:var(--teal);color:#fff;border-color:var(--teal)}
-.btn-primary:hover{background:var(--teal2);border-color:var(--teal2)}
-.content{flex:1;overflow-y:auto;padding:16px}
-/* PAGES */
-.page{display:none}.page.active{display:block}
-/* TABS */
-.tabs-bar{display:flex;gap:2px;background:#ECEEF3;border-radius:8px;padding:3px;margin-bottom:20px;width:fit-content}
-.tab-btn{padding:6px 16px;font-size:12.5px;border-radius:6px;cursor:pointer;color:var(--text2);border:none;background:none;font-family:inherit;font-weight:500;transition:all .15s}
-.tab-btn.active{background:var(--card);color:var(--text1);box-shadow:0 1px 3px rgba(0,0,0,.1)}
-/* GRID */
-.grid-6{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}
-.grid-4{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:16px}
-.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}
-.grid-2{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:16px}
-@media(min-width:600px){.grid-6{grid-template-columns:repeat(6,1fr)}.grid-4{grid-template-columns:repeat(4,1fr)}.grid-2{grid-template-columns:1fr 1fr}}
-/* CARDS */
-.card{background:var(--card);border-radius:var(--r);border:1px solid var(--border);padding:16px;box-shadow:var(--shadow)}
-.card-title{font-size:13px;font-weight:600;color:var(--text1);margin-bottom:14px;display:flex;align-items:center;justify-content:space-between}
-.card-title .action{font-size:12px;color:var(--teal);cursor:pointer;font-weight:500}
-/* METRIC */
-.metric{background:var(--card);border-radius:var(--r);border:1px solid var(--border);padding:14px 16px;box-shadow:var(--shadow)}
-.metric.accent{background:var(--teal);border-color:var(--teal)}
-.metric.accent .m-label,.metric.accent .m-change{color:rgba(255,255,255,.75)}
-.metric.accent .m-val{color:#fff}
-.metric.soft{background:var(--teal-l);border-color:#b3dfd0}
-.metric.soft .m-label,.metric.soft .m-change,.metric.soft .m-val{color:var(--teal2)}
-.m-label{font-size:11px;color:var(--text3);margin-bottom:5px;font-weight:500}
-.m-val{font-size:22px;font-weight:700;color:var(--text1);line-height:1.1}
-.m-unit{font-size:12px;font-weight:400;color:var(--text3);margin-left:2px}
-.m-change{font-size:11px;margin-top:4px;font-weight:500}
-.down{color:#1D9E75}.up{color:#E24B4A}.neutral{color:var(--text3)}
-/* PROGRESS BAR */
-.prog-bar{height:6px;background:#EEF0F5;border-radius:3px;overflow:hidden;margin-top:6px}
-.prog-fill{height:100%;border-radius:3px;transition:width .6s}
-.prog-teal{background:linear-gradient(90deg,var(--teal),#2DC78A)}
-.prog-amber{background:var(--amber)}
-.prog-coral{background:var(--coral)}
-.prog-blue{background:var(--blue)}
-/* LOG ITEMS */
-.log-item{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)}
-.log-item:last-child{border-bottom:none;padding-bottom:0}
-.log-icon{width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:15px}
-.li-teal{background:var(--teal-l)}
-.li-amber{background:var(--amber-l)}
-.li-coral{background:var(--coral-l)}
-.li-blue{background:var(--blue-l)}
-.log-text{flex:1;min-width:0}
-.log-main{font-size:13px;font-weight:500;color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.log-sub{font-size:11px;color:var(--text3)}
-.log-val{text-align:right;flex-shrink:0}
-.log-val-main{font-size:13px;font-weight:600;color:var(--text1)}
-.log-val-sub{font-size:10px;color:var(--text3)}
-/* AI MESSAGES */
-.ai-msg{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)}
-.ai-msg:last-child{border-bottom:none}
-.ai-dot{width:28px;height:28px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:14px;margin-top:1px}
-.ai-green{background:var(--teal-l)}
-.ai-blue{background:var(--blue-l)}
-.ai-amber{background:var(--amber-l)}
-.ai-text{font-size:13px;color:var(--text1);line-height:1.65;flex:1}
-/* STREAK */
-.streak-row{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}
-.s-dot{width:22px;height:22px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:600;background:#EEF0F5;color:var(--text3)}
-.s-done{background:var(--teal);color:#fff}
-.s-today{background:var(--teal2);color:#fff;outline:2px solid var(--teal);outline-offset:2px}
-/* WATER RING */
-.water-ring{position:relative;width:72px;height:72px;flex-shrink:0}
-.water-ring svg{width:72px;height:72px;transform:rotate(-90deg)}
-.wring-text{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;line-height:1.1}
-.wring-val{font-size:14px;font-weight:700;color:var(--text1)}
-.wring-unit{font-size:9px;color:var(--text3)}
-/* BADGE */
-.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:600}
-.badge-teal{background:var(--teal-l);color:var(--teal2)}
-.badge-amber{background:var(--amber-l);color:#854F0B}
-.badge-purple{background:var(--purple-l);color:#534AB7}
-.badge-blue{background:var(--blue-l);color:#185FA5}
-/* FORM */
-.form-group{margin-bottom:14px}
-.form-label{font-size:12px;font-weight:600;color:var(--text2);margin-bottom:5px;display:block}
-.form-input,.form-select{width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:var(--r2);font-size:13.5px;font-family:inherit;color:var(--text1);background:var(--card);transition:border-color .15s}
-.form-input:focus,.form-select:focus{outline:none;border-color:var(--teal);box-shadow:0 0 0 3px rgba(29,158,117,.1)}
-.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.form-row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
-/* TABLE */
-.data-table{width:100%;border-collapse:collapse;font-size:13px}
-.data-table th{text-align:left;padding:9px 12px;font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border);background:#FAFBFC}
-.data-table td{padding:10px 12px;border-bottom:1px solid #F3F4F8;color:var(--text1)}
-.data-table tr:hover td{background:#F9FAFB}
-.data-table tr:last-child td{border-bottom:none}
-/* IF TIMER */
-.if-big{font-size:48px;font-weight:700;color:var(--teal);letter-spacing:-2px;line-height:1;text-align:center}
-.if-ring{position:relative;margin:0 auto 16px;width:180px;height:180px}
-.if-ring svg{width:180px;height:180px;transform:rotate(-90deg)}
-.if-ring-text{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center}
-/* ACHIEVEMENT */
-.ach-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
-.ach-card{background:var(--card);border-radius:var(--r);border:1px solid var(--border);padding:16px;text-align:center;box-shadow:var(--shadow);transition:transform .2s}
-.ach-card:hover{transform:translateY(-2px)}
-.ach-locked{opacity:.45;filter:grayscale(1)}
-.ach-icon{font-size:30px;margin-bottom:8px}
-.ach-name{font-size:12px;font-weight:600;color:var(--text1)}
-.ach-desc{font-size:10px;color:var(--text3);margin-top:3px}
-.ach-pts{font-size:11px;color:var(--teal);font-weight:600;margin-top:6px}
-/* MODAL */
-.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:100;align-items:center;justify-content:center}
-.modal-overlay.open{display:flex}
-.modal{background:var(--card);border-radius:var(--r);width:440px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.2);overflow:hidden}
-.modal-header{padding:18px 20px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
-.modal-title{font-size:15px;font-weight:700;color:var(--text1)}
-.modal-close{width:28px;height:28px;border-radius:6px;border:none;background:var(--bg);cursor:pointer;font-size:14px;color:var(--text2);display:flex;align-items:center;justify-content:center}
-.modal-body{padding:20px}
-.modal-footer{padding:14px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
-/* TOAST */
-.toast{position:fixed;bottom:24px;right:24px;background:var(--text1);color:#fff;padding:10px 16px;border-radius:var(--r2);font-size:13px;font-weight:500;box-shadow:0 8px 24px rgba(0,0,0,.2);transform:translateY(80px);opacity:0;transition:all .3s;z-index:200;display:flex;align-items:center;gap:8px}
-.toast.show{transform:translateY(0);opacity:1}
-::-webkit-scrollbar{width:5px}
-::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:#D0D3DF;border-radius:3px}
-/* LOGIN SCREEN */
-#login-screen{position:fixed;inset:0;background:linear-gradient(135deg,var(--teal2) 0%,var(--teal) 50%,#2DC78A 100%);display:flex;align-items:center;justify-content:center;z-index:999;flex-direction:column;gap:0}
-.login-box{background:var(--card);border-radius:20px;padding:40px 36px;width:360px;max-width:92vw;text-align:center;box-shadow:0 24px 80px rgba(0,0,0,.25)}
-.login-logo{width:56px;height:56px;background:linear-gradient(135deg,var(--teal),var(--teal2));border-radius:14px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:26px}
-.login-title{font-size:22px;font-weight:700;color:var(--text1);margin-bottom:6px}
-.login-sub{font-size:13px;color:var(--text3);margin-bottom:28px;line-height:1.6}
-.btn-google{width:100%;padding:13px;border-radius:10px;border:1px solid var(--border);background:var(--card);cursor:pointer;font-size:14px;font-family:inherit;font-weight:600;display:flex;align-items:center;justify-content:center;gap:10px;transition:all .15s;color:var(--text1)}
-.btn-google:hover{background:var(--bg);border-color:#bbb;transform:translateY(-1px)}
-.btn-google img{width:20px;height:20px}
-.login-note{font-size:11px;color:rgba(255,255,255,.7);margin-top:20px;text-align:center}
-/* SYNC BADGE */
-.sync-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:3px 8px;border-radius:6px;background:var(--teal-l);color:var(--teal2);font-weight:600}
-.sync-dot{width:6px;height:6px;border-radius:50%;background:var(--teal);animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-/* APP SCREEN */
-#app-screen{display:none;flex-direction:column;height:100vh;overflow:hidden}
-/* HISTORY SECTION */
-.hist-section{margin-top:20px}
-.hist-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px}
-.hist-title{font-size:14px;font-weight:600;color:var(--text1)}
-.hist-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.hist-filters input[type=date]{padding:6px 10px;border:1px solid var(--border);border-radius:var(--r2);font-size:12px;font-family:inherit;color:var(--text1);background:var(--card);cursor:pointer}
-.hist-filters input[type=date]:focus{outline:none;border-color:var(--teal)}
-.date-sep{font-size:12px;color:var(--text3)}
-.hist-count{font-size:11px;color:var(--text3);padding:3px 8px;background:var(--bg);border-radius:6px;border:1px solid var(--border)}
-.hist-list{display:flex;flex-direction:column;gap:0}
-.hist-day-group{margin-bottom:4px}
-.hist-day-label{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;padding:10px 0 5px;display:flex;align-items:center;gap:8px}
-.hist-day-label::after{content:'';flex:1;height:1px;background:var(--border)}
-.hist-row{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--card);border:1px solid var(--border);border-radius:var(--r2);margin-bottom:5px;transition:border-color .15s}
-.hist-row:hover{border-color:#c0c4d0}
-.hist-row-icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
-.hist-row-body{flex:1;min-width:0}
-.hist-row-main{font-size:13px;font-weight:500;color:var(--text1)}
-.hist-row-sub{font-size:11px;color:var(--text3);margin-top:1px}
-.hist-row-val{text-align:right;flex-shrink:0}
-.hist-row-val-main{font-size:13px;font-weight:600;color:var(--text1)}
-.hist-row-val-sub{font-size:10px;color:var(--text3)}
-.hist-row-del{width:26px;height:26px;border-radius:6px;border:none;background:none;cursor:pointer;color:var(--text3);font-size:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s}
-.hist-row-del:hover{background:var(--red-l);color:var(--red)}
-.hist-empty{text-align:center;padding:32px 16px;color:var(--text3);font-size:13px}
-.hist-empty-icon{font-size:32px;margin-bottom:8px}
-.tag{display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600}
-.tag-breakfast{background:var(--teal-l);color:var(--teal2)}
-.tag-lunch{background:var(--amber-l);color:#854F0B}
-.tag-dinner{background:var(--blue-l);color:#185FA5}
-.tag-snack{background:var(--coral-l);color:#993C1D}
 
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --teal:#1D9E75;--teal2:#0F6E56;--teal-l:#E1F5EE;
+  --purple:#7F77DD;--purple-l:#EEEDFE;--purple2:#534AB7;
+  --amber:#EF9F27;--amber-l:#FAEEDA;--amber2:#854F0B;
+  --red:#E24B4A;--red-l:#FCEBEB;--red2:#A32D2D;
+  --blue:#378ADD;--blue-l:#E6F1FB;--blue2:#185FA5;
+  --g50:#F7F7F5;--g100:#EDECE8;--g200:#D3D1C7;--g400:#888780;--g600:#5F5E5A;
+  --r:12px;--r2:8px;
+  --font:-apple-system,'Segoe UI','Sarabun',sans-serif;
+}
+body{font-family:var(--font);background:var(--g50);color:#1a1a18;min-height:100vh;font-size:15px;line-height:1.6}
+
+/* LOGIN */
+#login-screen{position:fixed;inset:0;background:linear-gradient(135deg,var(--teal2),var(--teal),#2DC78A);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:0;z-index:999}
+.login-box{background:#fff;border-radius:20px;padding:40px 36px;width:360px;max-width:92vw;text-align:center;box-shadow:0 24px 80px rgba(0,0,0,.25)}
+.login-logo{font-size:40px;margin-bottom:14px}
+.login-title{font-size:22px;font-weight:700;margin-bottom:6px}
+.login-sub{font-size:13px;color:var(--g400);margin-bottom:28px;line-height:1.6}
+.btn-google{width:100%;padding:13px;border-radius:10px;border:1px solid var(--g200);background:#fff;cursor:pointer;font-size:14px;font-family:var(--font);font-weight:600;display:flex;align-items:center;justify-content:center;gap:10px;transition:all .15s;color:#1a1a18}
+.btn-google:hover{background:var(--g50);border-color:#bbb}
+.btn-google img{width:20px;height:20px}
+
+/* ONBOARDING */
+#onboarding-page{display:none;min-height:100vh;align-items:center;justify-content:center;padding:24px;background:var(--g50)}
+.ob-card{background:#fff;border:1px solid var(--g100);border-radius:16px;padding:32px;width:100%;max-width:420px}
+.step-dots{display:flex;gap:6px;justify-content:center;margin-bottom:28px}
+.step-dot{height:6px;border-radius:3px;background:var(--g200);transition:all .2s;width:20px}
+.step-dot.active{background:var(--teal);width:32px}
+.step-dot.done{background:var(--teal)}
+
+/* TOPBAR */
+.topbar{background:#fff;border-bottom:1px solid var(--g100);padding:0 20px;display:flex;align-items:center;justify-content:space-between;height:52px;position:sticky;top:0;z-index:100}
+.logo{display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px}
+.logo-dot{width:9px;height:9px;background:var(--teal);border-radius:50%}
+.nav{display:flex;gap:2px}
+.nav-btn{background:none;border:none;padding:6px 14px;border-radius:var(--r2);font-size:13px;color:var(--g600);cursor:pointer;font-family:var(--font);transition:background .15s,color .15s}
+.nav-btn:hover{background:var(--g100)}
+.nav-btn.active{background:var(--teal-l);color:var(--teal2);font-weight:600}
+.user-btn{width:32px;height:32px;border-radius:50%;background:var(--teal-l);border:none;cursor:pointer;font-size:12px;font-weight:700;color:var(--teal2);position:relative}
+
+/* LAYOUT */
+.page{display:none}.page.active{display:block}
+.container{max-width:960px;margin:0 auto;padding:24px 20px}
+
+/* CARDS */
+.card{background:#fff;border:1px solid var(--g100);border-radius:var(--r);padding:20px;margin-bottom:16px}
+.card-title{font-size:12px;font-weight:700;color:var(--g600);text-transform:uppercase;letter-spacing:.06em;margin-bottom:16px}
+
+/* METRICS */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px}
+.metric{background:#fff;border:1px solid var(--g100);border-radius:var(--r);padding:16px}
+.metric-label{font-size:11px;color:var(--g400);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+.metric-value{font-size:26px;font-weight:700;line-height:1.1}
+.metric-unit{font-size:14px;font-weight:400;color:var(--g400);margin-left:2px}
+.metric-sub{font-size:12px;color:var(--g400);margin-top:4px}
+.metric-sub.good{color:var(--teal2)}
+
+/* FORMS */
+label{display:block;font-size:12px;color:var(--g600);margin-bottom:5px;font-weight:500}
+input[type=text],input[type=number],input[type=date],input[type=time],select,textarea{
+  width:100%;border:1px solid var(--g200);border-radius:var(--r2);padding:9px 12px;
+  font-size:14px;font-family:var(--font);color:#1a1a18;background:#fff;
+  transition:border-color .15s;outline:none;appearance:none
+}
+input:focus,select:focus{border-color:var(--teal);box-shadow:0 0 0 3px rgba(29,158,117,.15)}
+.form-row{margin-bottom:14px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
+
+/* BUTTONS */
+.btn{border:none;border-radius:var(--r2);padding:10px 18px;font-size:14px;font-family:var(--font);font-weight:500;cursor:pointer;transition:opacity .15s,transform .1s;display:inline-flex;align-items:center;gap:6px}
+.btn:active{transform:scale(0.97)}
+.btn-primary{background:var(--teal);color:#fff}
+.btn-primary:hover{opacity:.88}
+.btn-ghost{background:var(--g100);color:var(--g600)}
+.btn-ghost:hover{background:var(--g200)}
+.btn-danger{background:var(--red-l);color:var(--red2)}
+.btn-full{width:100%;justify-content:center;padding:12px;font-size:15px;border-radius:var(--r)}
+
+/* TABS */
+.tabs{display:flex;background:var(--g100);border-radius:var(--r2);padding:3px;gap:2px;margin-bottom:20px}
+.tab{flex:1;border:none;background:none;padding:8px;border-radius:6px;font-size:13px;font-family:var(--font);color:var(--g600);cursor:pointer;transition:all .15s}
+.tab.active{background:#fff;color:#1a1a18;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+
+/* CHIPS */
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:1px solid var(--g200);background:#fff;border-radius:20px;padding:6px 14px;font-size:13px;cursor:pointer;transition:all .15s;color:var(--g600);font-family:var(--font)}
+.chip:hover{border-color:var(--teal)}
+.chip.selected{border-color:var(--teal);background:var(--teal-l);color:var(--teal2);font-weight:500}
+
+/* LOG LIST */
+.log-list{display:flex;flex-direction:column;gap:8px}
+.log-item{display:flex;align-items:center;gap:12px;background:var(--g50);border-radius:var(--r2);padding:10px 14px}
+.log-icon{width:34px;height:34px;border-radius:var(--r2);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+.log-icon.food{background:var(--teal-l)}
+.log-icon.run{background:var(--purple-l)}
+.log-icon.sleep{background:var(--blue-l)}
+.log-meta{flex:1}
+.log-name{font-size:13px;font-weight:600}
+.log-sub{font-size:12px;color:var(--g400)}
+.log-del{background:none;border:none;cursor:pointer;color:var(--g400);font-size:16px;padding:4px;border-radius:4px}
+.log-del:hover{color:var(--red);background:var(--red-l)}
+
+/* BADGES */
+.badges-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+.badge-card{border:1px solid var(--g100);border-radius:var(--r);padding:16px 12px;text-align:center;background:#fff}
+.badge-card.earned{border-color:#9FE1CB;background:var(--teal-l)}
+.badge-card.locked{opacity:.4}
+.badge-emoji{font-size:28px;display:block;margin-bottom:8px}
+.badge-name{font-size:12px;font-weight:700;color:var(--teal2)}
+.badge-card.locked .badge-name{color:var(--g400)}
+.badge-desc{font-size:11px;color:var(--teal);margin-top:3px}
+.badge-card.locked .badge-desc{color:var(--g400)}
+
+/* CHART LEGEND */
+.chart-legend{display:flex;gap:16px;margin-bottom:10px;flex-wrap:wrap}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--g600)}
+.legend-dot{width:10px;height:3px;border-radius:2px}
+
+/* BMI BAR */
+.bmi-bar{height:8px;border-radius:4px;background:linear-gradient(to right,#85B7EB,#1D9E75,#EF9F27,#E24B4A);position:relative;margin:12px 0}
+.bmi-marker{position:absolute;top:-4px;width:16px;height:16px;border-radius:50%;background:#1a1a18;border:2px solid #fff;transform:translateX(-50%);box-shadow:0 1px 4px rgba(0,0,0,.2)}
+.bmi-labels{display:flex;justify-content:space-between;font-size:11px;color:var(--g400)}
+
+/* CAL BOX */
+.cal-box{background:var(--purple-l);border:1px solid #CECBF6;border-radius:var(--r2);padding:14px 16px;display:flex;align-items:center;justify-content:space-between;margin-top:14px}
+.cal-val{font-size:24px;font-weight:700;color:#3C3489}
+.cal-label{font-size:12px;color:var(--purple2)}
+
+/* TOAST */
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:#1a1a18;color:#fff;border-radius:var(--r2);padding:10px 20px;font-size:13px;z-index:9999;transition:transform .25s cubic-bezier(.34,1.56,.64,1);pointer-events:none}
+#toast.show{transform:translateX(-50%) translateY(0)}
+
+/* MODAL */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:10000;padding:24px}
+.modal-bg.hidden{display:none}
+.modal-box{background:#fff;border-radius:var(--r);padding:24px;max-width:360px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,.2)}
+.modal-title{font-size:16px;font-weight:700;margin-bottom:8px}
+.modal-body{font-size:14px;color:var(--g600);margin-bottom:20px;line-height:1.6}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end}
+
+/* USER MENU */
+.umenu{position:absolute;right:0;top:40px;background:#fff;border:1px solid var(--g100);border-radius:var(--r);box-shadow:0 4px 20px rgba(0,0,0,.12);min-width:180px;z-index:200;padding:8px 0;display:none}
+.umenu.open{display:block}
+.umenu-item{padding:9px 16px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px}
+.umenu-item:hover{background:var(--g50)}
+
+/* DASH GRID */
+.dash-grid{display:grid;grid-template-columns:1fr 280px;gap:16px}
+
+/* RESPONSIVE */
+@media(max-width:700px){.dash-grid{grid-template-columns:1fr}.nav-btn span.txt{display:none}}
+@media(max-width:600px){.form-grid{grid-template-columns:1fr}.metrics{grid-template-columns:1fr 1fr}.container{padding:16px}}
+@media(max-width:400px){.metrics{grid-template-columns:1fr}}
+
+.empty{text-align:center;padding:32px 16px;color:var(--g400);font-size:14px}
+.empty-icon{font-size:36px;margin-bottom:10px}
+.spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--teal-l);border-top-color:var(--teal);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
 
-<!-- LOGIN SCREEN -->
+<!-- ── LOGIN ── -->
 <div id="login-screen">
   <div class="login-box">
     <div class="login-logo">💚</div>
     <div class="login-title">สุขภาพดี</div>
-    <div class="login-sub">ติดตามสุขภาพส่วนตัวของคุณ<br>ข้อมูลเซฟบน Cloud เปลี่ยนเครื่องได้เลย</div>
+    <div class="login-sub">ติดตามสุขภาพส่วนตัว<br>ข้อมูลเซฟบน Cloud เปลี่ยนเครื่องได้เลย</div>
     <button class="btn-google" onclick="window._loginGoogle()">
-      <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google">
+      <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="">
       เข้าสู่ระบบด้วย Google
     </button>
-    <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);font-size:11px;color:var(--text3)">
-      🔒 ข้อมูลของคุณปลอดภัยด้วย Firebase<br>ไม่มีการแชร์ข้อมูลกับผู้อื่น
-    </div>
+    <div style="margin-top:16px;font-size:11px;color:var(--g400)">🔒 ข้อมูลปลอดภัยด้วย Firebase • ฟรี 100%</div>
   </div>
-  <div class="login-note">⚡ ฟรี 100% • ใช้ Google Account เดิมได้เลย</div>
 </div>
 
-<!-- APP SCREEN -->
-<div id="app-screen">
-<div class="app">
-
-<!-- TOP NAV -->
-<header class="topnav">
-  <div class="topnav-header">
-    <div class="logo-row">
-      <div class="logo-icon">
-        <svg viewBox="0 0 24 24"><path d="M12 21.593c-5.63-5.539-11-10.297-11-14.402C1 3.791 4.68 2 7.5 2c1.979 0 4.337.827 5.5 3.3C14.163 2.827 16.521 2 18.5 2c2.82 0 6.5 1.79 6.5 5.191 0 4.105-5.37 8.863-11 14.402z" transform="scale(.85) translate(1.5,1.5)"/></svg>
-      </div>
-      <div>
-        <div class="logo-name">สุขภาพดี</div>
-        <div class="logo-sub">ติดตามสุขภาพส่วนตัว</div>
-      </div>
-    </div>
-    <div class="topnav-right">
-      <span class="sync-badge"><span class="sync-dot"></span>ซิงค์แล้ว</span>
-      <button class="btn" onclick="openModal('modal-weight')" style="padding:6px 10px;font-size:12px">⚖️ ชั่ง</button>
-      <button class="btn btn-primary" onclick="openModal('modal-food')" style="padding:6px 10px;font-size:12px">+ บันทึก</button>
-      <div style="position:relative">
-        <div class="avatar" onclick="document.getElementById('user-menu').classList.toggle('open')" style="cursor:pointer;overflow:hidden">
-          <img id="user-avatar-img" src="" alt="" style="display:none;width:100%;height:100%;object-fit:cover;border-radius:50%">
-          <span id="user-avatar-text">สม</span>
-        </div>
-        <div id="user-menu" style="display:none;position:absolute;right:0;top:40px;background:var(--card);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--shadow);min-width:180px;z-index:100;padding:8px 0">
-          <div style="padding:10px 14px;border-bottom:1px solid var(--border)">
-            <div style="font-size:12px;font-weight:600;color:var(--text1)" id="user-name-display">ผู้ใช้</div>
-            <div style="font-size:11px;color:var(--text3)">ข้อมูลซิงค์บน Firebase ☁️</div>
-          </div>
-          <div onclick="window._logout();document.getElementById('user-menu').classList.remove('open')" style="padding:9px 14px;font-size:13px;color:var(--red);cursor:pointer;display:flex;align-items:center;gap:8px">
-            🚪 ออกจากระบบ
-          </div>
-        </div>
-      </div>
-    </div>
+<!-- ── ONBOARDING ── -->
+<div id="onboarding-page">
+<div class="ob-card">
+  <div style="display:flex;align-items:center;gap:8px;justify-content:center;margin-bottom:24px">
+    <div class="logo-dot"></div><span style="font-weight:700;font-size:18px">สุขภาพดี</span>
   </div>
-  <nav class="nav-scroll">
-    <div class="nav-item active" onclick="showPage('dashboard',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-      แดชบอร์ด
-    </div>
-    <div class="nav-item" onclick="showPage('weight',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3C8 3 4 6 4 10h16c0-4-4-7-8-7z"/><rect x="2" y="10" width="20" height="11" rx="2"/><line x1="8" y1="15" x2="16" y2="15"/></svg>
-      น้ำหนัก
-    </div>
-    <div class="nav-item" onclick="showPage('progress',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-      คืบหน้า
-    </div>
-    <div class="nav-item" onclick="showPage('food',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
-      อาหาร
-    </div>
-    <div class="nav-item" onclick="showPage('exercise',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.5 6.5h11M6.5 17.5h11M3 10h18M3 14h18"/></svg>
-      ออกกำลัง
-    </div>
-    <div class="nav-item" onclick="showPage('water',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C6.5 11 6 13 6 16a6 6 0 0 0 12 0c0-3-.5-5-6-14z"/></svg>
-      ดื่มน้ำ
-    </div>
-    <div class="nav-item" onclick="showPage('fasting',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-      IF
-    </div>
-    <div class="nav-item" onclick="showPage('ai',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
-      AI Coach
-    </div>
-    <div class="nav-item" onclick="showPage('achievements',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="6"/><path d="M15.477 12.89L17 22l-5-3-5 3 1.523-9.11"/></svg>
-      ความสำเร็จ
-    </div>
-    <div class="nav-item" onclick="showPage('reports',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-      รายงาน
-    </div>
-  </nav>
-</header>
+  <div class="step-dots">
+    <div class="step-dot active" id="sd1"></div>
+    <div class="step-dot" id="sd2"></div>
+    <div class="step-dot" id="sd3"></div>
+  </div>
 
-<!-- MAIN -->
-<div class="main">
-  <div class="content">
-
-    <!-- DASHBOARD -->
-    <div class="page active" id="page-dashboard">
-      <div class="tabs-bar">
-        <button class="tab-btn active" onclick="switchTab(this)">7 วัน</button>
-        <button class="tab-btn" onclick="switchTab(this)">เดือนนี้</button>
-        <button class="tab-btn" onclick="switchTab(this)">3 เดือน</button>
-      </div>
-      <div class="grid-6">
-        <div class="metric accent">
-          <div class="m-label">⚖️ น้ำหนัก</div>
-          <div class="m-val">68.5<span class="m-unit" style="color:rgba(255,255,255,.6)">กก.</span></div>
-          <div class="m-change" style="color:rgba(255,255,255,.75)">▼ 0.5 กก. สัปดาห์นี้</div>
-        </div>
-        <div class="metric">
-          <div class="m-label">📊 BMI</div>
-          <div class="m-val">23.1</div>
-          <div class="m-change neutral">ปกติ ✓</div>
-        </div>
-        <div class="metric soft">
-          <div class="m-label">📉 ลดได้แล้ว</div>
-          <div class="m-val">3.5<span class="m-unit">กก.</span></div>
-          <div class="m-change">จาก 72 กก.</div>
-        </div>
-        <div class="metric">
-          <div class="m-label">🎯 เหลืออีก</div>
-          <div class="m-val">3.5<span class="m-unit">กก.</span></div>
-          <div class="m-change neutral">เป้า 65 กก.</div>
-        </div>
-        <div class="metric">
-          <div class="m-label">⭐ คะแนนวินัย</div>
-          <div class="m-val">82</div>
-          <div class="m-change down">ระดับดีมาก</div>
-        </div>
-        <div class="metric">
-          <div class="m-label">🔥 Streak</div>
-          <div class="m-val">12<span class="m-unit">วัน</span></div>
-          <div class="m-change down">ต่อเนื่อง!</div>
-        </div>
-      </div>
-
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-title">
-            กราฟน้ำหนัก (12 สัปดาห์)
-            <div style="display:flex;gap:12px;font-size:11px;color:var(--text3)">
-              <span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:3px;background:var(--teal);display:inline-block;border-radius:2px"></span>น้ำหนักจริง</span>
-              <span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:3px;background:var(--amber);display:inline-block;border-radius:2px"></span>เป้าหมาย</span>
-            </div>
-          </div>
-          <div style="position:relative;height:180px"><canvas id="c-weight"></canvas></div>
-        </div>
-        <div class="card">
-          <div class="card-title">% ความสำเร็จ</div>
-          <div style="position:relative;height:180px"><canvas id="c-progress"></canvas></div>
-        </div>
-      </div>
-
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-title">อาหารวันนี้ <span class="action" onclick="showPage('food',null)">+ เพิ่ม</span></div>
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-            <div>
-              <div style="font-size:11px;color:var(--text3);margin-bottom:2px">แคลอรี่รวม</div>
-              <div style="font-size:20px;font-weight:700">1,420 <span style="font-size:11px;font-weight:400;color:var(--text3)">/ 1,700 kcal</span></div>
-            </div>
-            <div style="display:flex;gap:14px;font-size:11px;text-align:center">
-              <div><div style="font-weight:700;color:var(--coral)">85g</div><div style="color:var(--text3)">โปรตีน</div></div>
-              <div><div style="font-weight:700;color:var(--amber)">160g</div><div style="color:var(--text3)">คาร์บ</div></div>
-              <div><div style="font-weight:700;color:var(--blue)">48g</div><div style="color:var(--text3)">ไขมัน</div></div>
-            </div>
-          </div>
-          <div class="prog-bar"><div class="prog-fill prog-teal" style="width:83%"></div></div>
-          <div style="margin-top:10px">
-            <div class="log-item"><div class="log-icon li-teal">🍚</div><div class="log-text"><div class="log-main">ข้าวต้มหมู + ไข่ดาว</div><div class="log-sub">มื้อเช้า • 07:30 น.</div></div><div class="log-val"><div class="log-val-main">380</div><div class="log-val-sub">kcal</div></div></div>
-            <div class="log-item"><div class="log-icon li-amber">🍱</div><div class="log-text"><div class="log-main">ข้าวหน้าไก่ + ผักบุ้งผัด</div><div class="log-sub">มื้อเที่ยง • 12:15 น.</div></div><div class="log-val"><div class="log-val-main">620</div><div class="log-val-sub">kcal</div></div></div>
-            <div class="log-item"><div class="log-icon li-coral">🍎</div><div class="log-text"><div class="log-main">แอปเปิ้ลเขียว</div><div class="log-sub">ของว่าง • 15:00 น.</div></div><div class="log-val"><div class="log-val-main">85</div><div class="log-val-sub">kcal</div></div></div>
-            <div class="log-item"><div class="log-icon li-blue">🥗</div><div class="log-text"><div class="log-main">ผัดผักรวมไข่ขาว</div><div class="log-sub">มื้อเย็น • 18:30 น.</div></div><div class="log-val"><div class="log-val-main">335</div><div class="log-val-sub">kcal</div></div></div>
-          </div>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:16px">
-          <div class="card">
-            <div class="card-title">ออกกำลังกายวันนี้ <span class="action" onclick="showPage('exercise',null)">+ เพิ่ม</span></div>
-            <div class="log-item"><div class="log-icon li-teal">🏃</div><div class="log-text"><div class="log-main">วิ่ง</div><div class="log-sub">45 นาที • 06:00 น.</div></div><div class="log-val"><div class="log-val-main">320</div><div class="log-val-sub">kcal</div></div></div>
-            <div class="log-item"><div class="log-icon li-amber">🏋️</div><div class="log-text"><div class="log-main">เวทเทรนนิ่ง</div><div class="log-sub">30 นาที • 07:00 น.</div></div><div class="log-val"><div class="log-val-main">180</div><div class="log-val-sub">kcal</div></div></div>
-            <div style="margin-top:8px;display:flex;justify-content:space-between;font-size:12px;padding-top:8px;border-top:1px solid var(--border)"><span style="color:var(--text3)">รวมเผาผลาญ</span><span style="font-weight:700;color:var(--teal2)">500 kcal</span></div>
-          </div>
-          <div class="card">
-            <div class="card-title">การดื่มน้ำ <span class="action" onclick="addWater(250)">+250ml</span></div>
-            <div style="display:flex;align-items:center;gap:14px">
-              <div class="water-ring">
-                <svg viewBox="0 0 72 72" fill="none">
-                  <circle cx="36" cy="36" r="28" stroke="#EEF0F5" stroke-width="6"/>
-                  <circle cx="36" cy="36" r="28" stroke="var(--teal)" stroke-width="6" stroke-dasharray="175.9" stroke-dashoffset="52.8" stroke-linecap="round" id="water-ring-fill"/>
-                </svg>
-                <div class="wring-text"><div class="wring-val" id="water-display">2.1</div><div class="wring-unit">ลิตร</div></div>
-              </div>
-              <div style="flex:1">
-                <div style="font-size:11px;color:var(--text3);margin-bottom:5px">เป้าหมาย 3 ลิตร / วัน</div>
-                <div class="prog-bar" style="margin-bottom:10px"><div class="prog-fill prog-teal" id="water-prog" style="width:70%"></div></div>
-                <div style="display:flex;gap:6px">
-                  <button class="btn" style="font-size:11px;padding:5px 10px" onclick="addWater(250)">+250</button>
-                  <button class="btn" style="font-size:11px;padding:5px 10px" onclick="addWater(500)">+500</button>
-                  <button class="btn" style="font-size:11px;padding:5px 10px" onclick="addWater(1000)">+1L</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-title">
-            <span style="display:flex;align-items:center;gap:8px"><span class="badge badge-purple">🤖 AI Coach</span><span style="font-size:11px;color:var(--text3);font-weight:400">อัปเดต 20:00 น.</span></span>
-            <button class="btn" style="font-size:11px;padding:4px 10px" onclick="showToast('🤖 AI กำลังวิเคราะห์...')">รีเฟรช</button>
-          </div>
-          <div class="ai-msg"><div class="ai-dot ai-green">👍</div><div class="ai-text">ยอดเยี่ยมมาก! คุณลดน้ำหนักได้ 0.5 กก. ในสัปดาห์นี้ และออกกำลังกายครบ 4 วันจาก 5 วันตามแผน ความสม่ำเสมอน่าชมเชยมากครับ 💪</div></div>
-          <div class="ai-msg"><div class="ai-dot ai-blue">💡</div><div class="ai-text">แนะนำให้เพิ่มโปรตีนอีก 20 กรัมต่อวัน โดยเพิ่มไข่ขาว 3 ฟอง หรือเนื้อไก่ 80 กรัม เพื่อรักษามวลกล้ามเนื้อขณะลดน้ำหนักครับ</div></div>
-          <div class="ai-msg"><div class="ai-dot ai-amber">⚠️</div><div class="ai-text">ดื่มน้ำวันนี้ยังไม่ถึงเป้าหมาย เหลืออีก 900 ml ลองตั้งนาฬิกาเตือนทุก 2 ชั่วโมงจะช่วยได้ครับ</div></div>
-        </div>
-        <div class="card">
-          <div class="card-title">Streak — 14 วันล่าสุด</div>
-          <div class="streak-row">
-            <div class="s-dot s-done">จ</div><div class="s-dot s-done">อ</div><div class="s-dot s-done">พ</div><div class="s-dot s-done">พฤ</div><div class="s-dot s-done">ศ</div><div class="s-dot s-done">ส</div><div class="s-dot s-done">อา</div>
-            <div class="s-dot s-done">จ</div><div class="s-dot s-done">อ</div><div class="s-dot s-done">พ</div><div class="s-dot s-done">พฤ</div><div class="s-dot s-done">ศ</div><div class="s-dot s-done">ส</div><div class="s-dot s-today">อา</div>
-          </div>
-          <div style="font-size:12px;color:var(--text3);margin-top:10px;line-height:1.7">บันทึกต่อเนื่อง <strong style="color:var(--teal)">12 วัน</strong> 🔥<br>อีก 2 วันปลดล็อกเหรียญ "14 วันต่อเนื่อง" ✨</div>
-          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
-            <div style="font-size:12px;color:var(--text2);margin-bottom:8px;font-weight:600">สถานะวันนี้</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px">
-              <div style="padding:8px;background:var(--teal-l);border-radius:8px;display:flex;align-items:center;gap:6px"><span>✅</span><span style="color:var(--teal2)">ชั่งน้ำหนัก</span></div>
-              <div style="padding:8px;background:var(--teal-l);border-radius:8px;display:flex;align-items:center;gap:6px"><span>✅</span><span style="color:var(--teal2)">บันทึกอาหาร</span></div>
-              <div style="padding:8px;background:var(--teal-l);border-radius:8px;display:flex;align-items:center;gap:6px"><span>✅</span><span style="color:var(--teal2)">ออกกำลังกาย</span></div>
-              <div style="padding:8px;background:var(--amber-l);border-radius:8px;display:flex;align-items:center;gap:6px"><span>⏳</span><span style="color:#854F0B">ดื่มน้ำ</span></div>
-            </div>
-          </div>
-        </div>
+  <!-- Step 1 -->
+  <div id="ob-step1">
+    <p style="font-size:18px;font-weight:700;margin-bottom:4px">ยินดีต้อนรับ 👋</p>
+    <p style="font-size:13px;color:var(--g400);margin-bottom:20px">กรอกข้อมูลเบื้องต้นเพื่อเริ่มต้น</p>
+    <div class="form-row"><label>ชื่อ</label><input type="text" id="ob-name" placeholder="สมชาย"></div>
+    <div class="form-row">
+      <label>เพศ</label>
+      <div class="chips" style="margin-top:4px">
+        <button class="chip selected" data-g="male" onclick="selGender(this)">ชาย</button>
+        <button class="chip" data-g="female" onclick="selGender(this)">หญิง</button>
+        <button class="chip" data-g="other" onclick="selGender(this)">อื่น ๆ</button>
       </div>
     </div>
-
-    <!-- WEIGHT -->
-    <div class="page" id="page-weight">
-      <div class="grid-4">
-        <div class="metric accent"><div class="m-label">⚖️ น้ำหนักล่าสุด</div><div class="m-val">68.5<span class="m-unit" style="color:rgba(255,255,255,.6)">กก.</span></div><div class="m-change" style="color:rgba(255,255,255,.75)">บันทึก: 9 มิ.ย.</div></div>
-        <div class="metric"><div class="m-label">📊 BMI</div><div class="m-val">23.1</div><div class="m-change neutral">ปกติ</div></div>
-        <div class="metric soft"><div class="m-label">📉 ลดได้ทั้งหมด</div><div class="m-val">3.5<span class="m-unit">กก.</span></div><div class="m-change">จากเดิม 72 กก.</div></div>
-        <div class="metric"><div class="m-label">🎯 เป้ารายสัปดาห์</div><div class="m-val">-0.5<span class="m-unit">กก.</span></div><div class="m-change down">อยู่ในเป้า ✓</div></div>
-      </div>
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-title">บันทึกน้ำหนักใหม่</div>
-          <div class="form-group"><label class="form-label">วันที่</label><input type="date" class="form-input" value="2026-06-10"></div>
-          <div class="form-row">
-            <div class="form-group"><label class="form-label">น้ำหนัก (กก.)</label><input type="number" class="form-input" placeholder="68.5" step="0.1"></div>
-            <div class="form-group"><label class="form-label">% ไขมัน</label><input type="number" class="form-input" placeholder="22.5" step="0.1"></div>
-          </div>
-          <div class="form-group"><label class="form-label">รอบเอว (ซม.)</label><input type="number" class="form-input" placeholder="78.0" step="0.5"></div>
-          <div class="form-group"><label class="form-label">หมายเหตุ</label><input type="text" class="form-input" placeholder="ตื่นเช้า ก่อนอาหาร..."></div>
-          <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="showToast('บันทึกน้ำหนักสำเร็จ ✓')">💾 บันทึกน้ำหนัก</button>
-        </div>
-        <div class="card">
-          <div class="card-title">กราฟน้ำหนัก</div>
-          <div style="position:relative;height:220px"><canvas id="c-weight2"></canvas></div>
-        </div>
-      </div>
-
-      <!-- WEIGHT HISTORY -->
-      <div class="hist-section">
-        <div class="hist-header">
-          <div class="hist-title">📋 ประวัติการชั่งน้ำหนัก</div>
-          <div class="hist-filters">
-            <input type="date" id="wf-from" value="2026-05-01" onchange="filterHistory('weight')">
-            <span class="date-sep">ถึง</span>
-            <input type="date" id="wf-to" value="2026-06-10" onchange="filterHistory('weight')">
-            <span class="hist-count" id="wf-count">แสดง 14 รายการ</span>
-          </div>
-        </div>
-        <div id="weight-history-list"></div>
-      </div>
+    <div class="form-grid">
+      <div><label>ส่วนสูง (cm)</label><input type="number" id="ob-height" placeholder="170" step="0.1"></div>
+      <div><label>วันเกิด</label><input type="date" id="ob-birth"></div>
     </div>
+    <button class="btn btn-primary btn-full" onclick="obNext(2)">ถัดไป →</button>
+  </div>
 
-    <!-- PROGRESS -->
-    <div class="page" id="page-progress">
-      <div class="grid-3">
-        <div class="card" style="text-align:center;padding:24px"><div style="font-size:40px;font-weight:700;color:var(--teal)">50%</div><div style="font-size:13px;color:var(--text3);margin-top:4px">ความสำเร็จโดยรวม</div><div class="prog-bar" style="margin-top:12px"><div class="prog-fill prog-teal" style="width:50%"></div></div></div>
-        <div class="card" style="text-align:center;padding:24px"><div style="font-size:40px;font-weight:700">82</div><div style="font-size:13px;color:var(--text3);margin-top:4px">คะแนนวินัยเฉลี่ย</div><div style="font-size:11px;color:var(--teal);margin-top:6px;font-weight:600">ระดับดีมาก ⭐</div></div>
-        <div class="card" style="text-align:center;padding:24px"><div style="font-size:40px;font-weight:700;color:var(--amber)">42</div><div style="font-size:13px;color:var(--text3);margin-top:4px">วันที่เดินทางมาแล้ว</div><div style="font-size:11px;color:var(--text3);margin-top:6px">เหลือ 126 วัน</div></div>
-      </div>
-      <div class="card" style="margin-bottom:20px">
-        <div class="card-title">กราฟน้ำหนักเทียบเป้าหมาย</div>
-        <div style="position:relative;height:240px"><canvas id="c-progress2"></canvas></div>
-      </div>
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-title">สรุปการออกกำลังกาย</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px">
-            <div style="text-align:center;padding:12px;background:var(--teal-ll);border-radius:8px"><div style="font-size:20px;font-weight:700;color:var(--teal2)">28</div><div style="font-size:11px;color:var(--text3)">ครั้ง/เดือน</div></div>
-            <div style="text-align:center;padding:12px;background:var(--amber-l);border-radius:8px"><div style="font-size:20px;font-weight:700;color:#854F0B">42.5</div><div style="font-size:11px;color:var(--text3)">ชั่วโมง</div></div>
-            <div style="text-align:center;padding:12px;background:var(--coral-l);border-radius:8px"><div style="font-size:20px;font-weight:700;color:#993C1D">8,400</div><div style="font-size:11px;color:var(--text3)">kcal เผา</div></div>
-          </div>
-          <div style="position:relative;height:140px"><canvas id="c-exercise-week"></canvas></div>
-        </div>
-        <div class="card">
-          <div class="card-title">แนวโน้ม BMI</div>
-          <div style="position:relative;height:220px"><canvas id="c-bmi"></canvas></div>
-        </div>
-      </div>
+  <!-- Step 2 -->
+  <div id="ob-step2" style="display:none">
+    <p style="font-size:18px;font-weight:700;margin-bottom:4px">ตั้งเป้าหมาย 🎯</p>
+    <p style="font-size:13px;color:var(--g400);margin-bottom:20px">กรอกน้ำหนักและเป้าหมาย</p>
+    <div class="form-grid">
+      <div><label>น้ำหนักปัจจุบัน (kg)</label><input type="number" id="ob-weight" placeholder="80.0" step="0.1" oninput="obBMI()"></div>
+      <div><label>น้ำหนักเป้าหมาย (kg)</label><input type="number" id="ob-goal" placeholder="70.0" step="0.1" oninput="obBMI()"></div>
     </div>
-
-    <!-- FOOD -->
-    <div class="page" id="page-food">
-      <div class="grid-4">
-        <div class="metric accent"><div class="m-label">🔥 แคลอรี่วันนี้</div><div class="m-val">1,420<span class="m-unit" style="color:rgba(255,255,255,.6)">kcal</span></div><div class="m-change" style="color:rgba(255,255,255,.75)">เป้า 1,700 kcal</div></div>
-        <div class="metric"><div class="m-label">🥩 โปรตีน</div><div class="m-val">85<span class="m-unit">g</span></div><div class="m-change neutral">เป้า 100g</div><div class="prog-bar"><div class="prog-fill prog-coral" style="width:85%"></div></div></div>
-        <div class="metric"><div class="m-label">🍞 คาร์บ</div><div class="m-val">160<span class="m-unit">g</span></div><div class="m-change neutral">เป้า 200g</div><div class="prog-bar"><div class="prog-fill prog-amber" style="width:80%"></div></div></div>
-        <div class="metric"><div class="m-label">🥑 ไขมัน</div><div class="m-val">48<span class="m-unit">g</span></div><div class="m-change neutral">เป้า 55g</div><div class="prog-bar"><div class="prog-fill prog-blue" style="width:87%"></div></div></div>
-      </div>
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-title">เพิ่มรายการอาหาร</div>
-          <div class="form-row" style="margin-bottom:14px">
-            <div class="form-group" style="margin-bottom:0"><label class="form-label">มื้ออาหาร</label><select class="form-select"><option>มื้อเช้า</option><option>มื้อเที่ยง</option><option selected>มื้อเย็น</option><option>ของว่าง</option></select></div>
-            <div class="form-group" style="margin-bottom:0"><label class="form-label">วันที่</label><input type="date" class="form-input" value="2026-06-10"></div>
-          </div>
-          <div class="form-group"><label class="form-label">ชื่ออาหาร</label><input type="text" class="form-input" placeholder="เช่น ข้าวมันไก่ หรืออัปโหลดรูป 📷"></div>
-          <div class="form-row3">
-            <div class="form-group"><label class="form-label">แคลอรี่</label><input type="number" class="form-input" placeholder="0"></div>
-            <div class="form-group"><label class="form-label">โปรตีน (g)</label><input type="number" class="form-input" placeholder="0"></div>
-            <div class="form-group"><label class="form-label">คาร์บ (g)</label><input type="number" class="form-input" placeholder="0"></div>
-          </div>
-          <div class="form-row" style="margin-bottom:14px">
-            <div class="form-group" style="margin-bottom:0"><label class="form-label">ไขมัน (g)</label><input type="number" class="form-input" placeholder="0"></div>
-            <div class="form-group" style="margin-bottom:0"><label class="form-label">ปริมาณ (g)</label><input type="number" class="form-input" placeholder="100"></div>
-          </div>
-          <div style="padding:10px;background:var(--blue-l);border-radius:8px;font-size:12px;color:#185FA5;margin-bottom:14px">💡 AI วิเคราะห์อาหารจากรูปภาพ<br><input type="file" accept="image/*" style="margin-top:6px;font-size:11px"></div>
-          <div style="display:flex;gap:8px">
-            <button class="btn" style="flex:1;justify-content:center" onclick="showToast('📷 AI กำลังวิเคราะห์รูปอาหาร...')">📷 AI วิเคราะห์</button>
-            <button class="btn btn-primary" style="flex:1;justify-content:center" onclick="showToast('เพิ่มอาหารสำเร็จ ✓')">+ เพิ่มรายการ</button>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-title">รายการอาหารวันนี้</div>
-          <div style="margin-bottom:10px"><div style="font-size:10px;font-weight:700;color:var(--text3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">มื้อเช้า</div>
-            <div class="log-item"><div class="log-icon li-teal">🍚</div><div class="log-text"><div class="log-main">ข้าวต้มหมู</div><div class="log-sub">1 ชาม • 07:30</div></div><div class="log-val"><div class="log-val-main">280</div><div class="log-val-sub">kcal</div></div></div>
-            <div class="log-item"><div class="log-icon li-teal">🥚</div><div class="log-text"><div class="log-main">ไข่ดาว</div><div class="log-sub">1 ฟอง • 07:30</div></div><div class="log-val"><div class="log-val-main">100</div><div class="log-val-sub">kcal</div></div></div>
-          </div>
-          <div style="margin-bottom:10px"><div style="font-size:10px;font-weight:700;color:var(--text3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">มื้อเที่ยง</div>
-            <div class="log-item"><div class="log-icon li-amber">🍗</div><div class="log-text"><div class="log-main">ข้าวหน้าไก่</div><div class="log-sub">1 จาน • 12:15</div></div><div class="log-val"><div class="log-val-main">480</div><div class="log-val-sub">kcal</div></div></div>
-            <div class="log-item"><div class="log-icon li-amber">🥬</div><div class="log-text"><div class="log-main">ผักบุ้งผัดน้ำมันหอย</div><div class="log-sub">1 จาน • 12:15</div></div><div class="log-val"><div class="log-val-main">140</div><div class="log-val-sub">kcal</div></div></div>
-          </div>
-          <div><div style="font-size:10px;font-weight:700;color:var(--text3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">มื้อเย็น</div>
-            <div class="log-item"><div class="log-icon li-blue">🥗</div><div class="log-text"><div class="log-main">ผัดผักรวมไข่ขาว</div><div class="log-sub">1 จาน • 18:30</div></div><div class="log-val"><div class="log-val-main">335</div><div class="log-val-sub">kcal</div></div></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- FOOD HISTORY -->
-      <div class="hist-section">
-        <div class="hist-header">
-          <div class="hist-title">📋 ประวัติการบันทึกอาหาร</div>
-          <div class="hist-filters">
-            <input type="date" id="ff-from" value="2026-05-01" onchange="filterHistory('food')">
-            <span class="date-sep">ถึง</span>
-            <input type="date" id="ff-to" value="2026-06-10" onchange="filterHistory('food')">
-            <span class="hist-count" id="ff-count">แสดง 30 รายการ</span>
-          </div>
-        </div>
-        <div id="food-history-list"></div>
-      </div>
-    </div>
-
-    <!-- EXERCISE -->
-    <div class="page" id="page-exercise">
-      <div class="grid-3">
-        <div class="metric accent"><div class="m-label">🔥 kcal เผาวันนี้</div><div class="m-val">500<span class="m-unit" style="color:rgba(255,255,255,.6)">kcal</span></div><div class="m-change" style="color:rgba(255,255,255,.75)">2 ครั้ง</div></div>
-        <div class="metric"><div class="m-label">⏱️ เวลาสัปดาห์นี้</div><div class="m-val">4.5<span class="m-unit">ชม.</span></div><div class="m-change down">6 ครั้ง</div></div>
-        <div class="metric soft"><div class="m-label">📅 ครั้งรวมเดือนนี้</div><div class="m-val">18<span class="m-unit">ครั้ง</span></div><div class="m-change">เป้า 20 ครั้ง</div></div>
-      </div>
-      <div class="card" style="margin-bottom:16px">
-        <div class="card-title">บันทึกการออกกำลังกาย</div>
-        <div class="form-row" style="margin-bottom:14px">
-          <div class="form-group" style="margin-bottom:0"><label class="form-label">วันที่</label><input type="date" id="inp-date-e" class="form-input" value="2026-06-10"></div>
-          <div class="form-group" style="margin-bottom:0"><label class="form-label">ประเภท</label>
-            <select id="inp-extype" class="form-select"><option>🏃 วิ่ง</option><option>🚶 เดิน</option><option>🚴 ปั่นจักรยาน</option><option>🏋️ เวทเทรนนิ่ง</option><option>🏊 ว่ายน้ำ</option><option>🤸 โยคะ</option><option>🏸 แบดมินตัน</option><option>⚽ ฟุตบอล</option><option>🪢 กระโดดเชือก</option></select>
-          </div>
-        </div>
-        <div class="form-row" style="margin-bottom:14px">
-          <div class="form-group" style="margin-bottom:0"><label class="form-label">ระยะเวลา (นาที)</label><input type="number" id="inp-exmin" class="form-input" placeholder="45"></div>
-          <div class="form-group" style="margin-bottom:0"><label class="form-label">แคลอรี่ (kcal)</label><input type="number" id="inp-exkcal" class="form-input" placeholder="คำนวณอัตโนมัติ"></div>
-        </div>
-        <div class="form-row" style="margin-bottom:14px">
-          <div class="form-group" style="margin-bottom:0"><label class="form-label">ระยะทาง (กม.)</label><input type="number" id="inp-exkm" class="form-input" placeholder="5.2" step="0.1"></div>
-          <div class="form-group" style="margin-bottom:0"><label class="form-label">หมายเหตุ</label><input type="text" id="inp-exnote" class="form-input" placeholder="วิ่งเช้าในสวน..."></div>
-        </div>
-        <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="window._saveExercise()">+ บันทึก → Firebase</button>
-      </div>
-
-      <!-- EXERCISE HISTORY -->
-      <div class="hist-section">
-        <div class="hist-header">
-          <div class="hist-title">📋 ประวัติการออกกำลังกาย</div>
-          <div class="hist-filters">
-            <input type="date" id="ef-from" value="2026-05-01" onchange="filterHistory('exercise')">
-            <span class="date-sep">ถึง</span>
-            <input type="date" id="ef-to" value="2026-06-10" onchange="filterHistory('exercise')">
-            <span class="hist-count" id="ef-count">แสดง 18 รายการ</span>
-          </div>
-        </div>
-        <div id="exercise-history-list"></div>
-      </div>
-    </div>
-
-    <!-- WATER -->
-    <div class="page" id="page-water">
-      <div style="max-width:560px;margin:0 auto">
-        <div class="card" style="text-align:center;padding:32px;margin-bottom:20px">
-          <div style="font-size:13px;color:var(--text3);margin-bottom:16px">การดื่มน้ำวันนี้</div>
-          <div style="position:relative;width:200px;height:200px;margin:0 auto 20px">
-            <svg viewBox="0 0 200 200" width="200" height="200" style="transform:rotate(-90deg)">
-              <circle cx="100" cy="100" r="80" fill="none" stroke="#EEF0F5" stroke-width="16"/>
-              <circle cx="100" cy="100" r="80" fill="none" stroke="var(--teal)" stroke-width="16" stroke-linecap="round" stroke-dasharray="502.7" stroke-dashoffset="150.8" id="water-big-ring"/>
-            </svg>
-            <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center">
-              <div style="font-size:42px;font-weight:700;color:var(--teal);line-height:1" id="water-big-display">2,100</div>
-              <div style="font-size:12px;color:var(--text3)">ml จาก 3,000 ml</div>
-            </div>
-          </div>
-          <div style="display:flex;justify-content:center;gap:10px;margin-bottom:20px">
-            <button class="btn btn-primary" onclick="window._saveWater(250)">+250 ml</button>
-            <button class="btn btn-primary" onclick="window._saveWater(500)">+500 ml</button>
-            <button class="btn btn-primary" onclick="window._saveWater(1000)">+1 ลิตร</button>
-            <button class="btn" style="color:var(--red)" onclick="addWater2(-250)">-250 ml</button>
-          </div>
-          <div style="font-size:13px;color:var(--text2)" id="water-remaining-text">เหลืออีก <strong style="color:var(--teal)">900 ml</strong> ถึงเป้าหมายวันนี้ 💧</div>
-        </div>
-        <div class="card" style="margin-bottom:20px"><div class="card-title">ประวัติการดื่มน้ำ 7 วัน</div><div style="position:relative;height:160px"><canvas id="c-water"></canvas></div></div>
-      </div>
-      <!-- WATER HISTORY -->
-      <div class="hist-section">
-        <div class="hist-header">
-          <div class="hist-title">📋 ประวัติการดื่มน้ำ</div>
-          <div class="hist-filters">
-            <input type="date" id="wtf-from" value="2026-05-25" onchange="filterHistory('water')">
-            <span class="date-sep">ถึง</span>
-            <input type="date" id="wtf-to" value="2026-06-10" onchange="filterHistory('water')">
-            <span class="hist-count" id="wtf-count">แสดง 17 รายการ</span>
-          </div>
-        </div>
-        <div id="water-history-list"></div>
-      </div>
-    </div>
-
-    <!-- FASTING -->
-    <div class="page" id="page-fasting">
-      <div style="max-width:580px;margin:0 auto">
-        <div class="card" style="margin-bottom:16px;text-align:center;padding:32px">
-          <div style="margin-bottom:16px"><span class="badge badge-teal" style="font-size:13px;padding:6px 16px">16/8 Intermittent Fasting</span></div>
-          <div class="if-ring">
-            <svg viewBox="0 0 180 180" width="180" height="180">
-              <circle cx="90" cy="90" r="76" fill="none" stroke="#EEF0F5" stroke-width="12"/>
-              <circle cx="90" cy="90" r="76" fill="none" stroke="var(--teal)" stroke-width="12" stroke-linecap="round" stroke-dasharray="477.5" stroke-dashoffset="119.4"/>
-            </svg>
-            <div class="if-ring-text">
-              <div class="if-big" id="if-timer">10:23:45</div>
-              <div style="font-size:12px;color:var(--text3);margin-top:4px">⏳ กำลังอดอาหาร</div>
-            </div>
-          </div>
-          <div style="display:flex;justify-content:center;gap:24px;margin-bottom:20px;font-size:13px">
-            <div style="text-align:center"><div style="font-weight:700;color:var(--teal)">16 ชั่วโมง</div><div style="color:var(--text3)">ช่วงอดอาหาร</div></div>
-            <div style="color:var(--border)">|</div>
-            <div style="text-align:center"><div style="font-weight:700;color:var(--amber)">8 ชั่วโมง</div><div style="color:var(--text3)">ช่วงกินได้</div></div>
-          </div>
-          <div style="display:flex;justify-content:center;gap:10px">
-            <button class="btn btn-primary" onclick="showToast('เริ่มช่วงกิน 12:00–20:00 น. 🍽️')">🍽️ เริ่มช่วงกินได้</button>
-            <button class="btn" onclick="showToast('หยุดการอดอาหาร')">⏹️ หยุด</button>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-title">เลือกรูปแบบ IF</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
-            <div style="padding:14px;border:2px solid var(--teal);border-radius:var(--r);text-align:center;cursor:pointer;background:var(--teal-l)">
-              <div style="font-size:18px;font-weight:700;color:var(--teal2)">16/8</div>
-              <div style="font-size:11px;color:var(--text3);margin-top:3px">กินได้ 12:00–20:00</div>
-              <div class="badge badge-teal" style="margin-top:8px">กำลังใช้</div>
-            </div>
-            <div style="padding:14px;border:1px solid var(--border);border-radius:var(--r);text-align:center;cursor:pointer" onclick="showToast('เปลี่ยนเป็น 18/6 แล้ว')">
-              <div style="font-size:18px;font-weight:700">18/6</div>
-              <div style="font-size:11px;color:var(--text3);margin-top:3px">กินได้ 13:00–19:00</div>
-            </div>
-            <div style="padding:14px;border:1px solid var(--border);border-radius:var(--r);text-align:center;cursor:pointer" onclick="showToast('เปลี่ยนเป็น 20/4 แล้ว')">
-              <div style="font-size:18px;font-weight:700">20/4</div>
-              <div style="font-size:11px;color:var(--text3);margin-top:3px">กินได้ 14:00–18:00</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- AI COACH -->
-    <div class="page" id="page-ai">
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-title">
-            <span>🤖 AI Coach วิเคราะห์วันนี้</span>
-            <button class="btn btn-primary" style="font-size:12px;padding:5px 12px" onclick="showToast('🤖 AI กำลังวิเคราะห์...')">🔄 วิเคราะห์ใหม่</button>
-          </div>
-          <div class="ai-msg"><div class="ai-dot ai-green" style="width:30px;height:30px;font-size:16px">👍</div><div class="ai-text">ยอดเยี่ยมมาก! คุณลดน้ำหนักได้ 0.5 กก. ในสัปดาห์นี้ และออกกำลังกายครบ 4 วันจาก 5 วันตามแผน ความสม่ำเสมอน่าชมเชยมากครับ 💪</div></div>
-          <div class="ai-msg"><div class="ai-dot ai-blue" style="width:30px;height:30px;font-size:16px">💡</div><div class="ai-text">แนะนำให้เพิ่มโปรตีนอีก 20 กรัมต่อวัน โดยเพิ่มไข่ขาว 3 ฟอง หรือเนื้อไก่ 80 กรัม เพื่อรักษามวลกล้ามเนื้อขณะลดน้ำหนักครับ</div></div>
-          <div class="ai-msg"><div class="ai-dot ai-blue" style="width:30px;height:30px;font-size:16px">💡</div><div class="ai-text">ลองเพิ่ม Strength Training อีก 1 วันต่อสัปดาห์ จะช่วยเพิ่ม Resting Metabolic Rate ได้ดีขึ้นครับ</div></div>
-          <div class="ai-msg"><div class="ai-dot ai-amber" style="width:30px;height:30px;font-size:16px">⚠️</div><div class="ai-text">ดื่มน้ำวันนี้ยังไม่ถึงเป้าหมาย เหลืออีก 900 ml ตั้งนาฬิกาทุก 2 ชั่วโมงจะช่วยได้ครับ</div></div>
-          <div class="ai-msg"><div class="ai-dot" style="width:30px;height:30px;font-size:16px;background:var(--teal-l)">📊</div><div class="ai-text">สรุปสัปดาห์: ความคืบหน้าโดยรวม 50% ออกกำลังกาย 4/5 วัน คะแนนวินัยเฉลี่ย 82/100 — ทำได้ดีมากครับ!</div></div>
-        </div>
+    <div class="form-row"><label>วันที่ต้องการบรรลุ</label><input type="date" id="ob-target" oninput="obBMI()"></div>
+    <div id="ob-bmi-box" style="display:none;background:var(--g50);border-radius:var(--r2);padding:14px;margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <div>
-          <div class="card" style="margin-bottom:16px">
-            <div class="card-title">📈 แนวโน้มน้ำหนัก + คะแนน</div>
-            <div style="position:relative;height:180px"><canvas id="c-trend"></canvas></div>
-          </div>
-          <div class="card">
-            <div class="card-title">🎯 คำแนะนำสัปดาห์หน้า</div>
-            <div style="display:flex;flex-direction:column;gap:8px">
-              <div style="padding:10px;background:var(--teal-ll);border-radius:8px;font-size:13px;border-left:3px solid var(--teal)"><strong style="color:var(--teal2)">โภชนาการ:</strong> เพิ่มโปรตีนเป็น 100g/วัน เน้นเนื้อไก่ ปลา ไข่ขาว</div>
-              <div style="padding:10px;background:var(--amber-l);border-radius:8px;font-size:13px;border-left:3px solid var(--amber)"><strong style="color:#854F0B">ออกกำลังกาย:</strong> เพิ่ม Strength Training อีก 1 วัน เป้า 5 วัน/สัปดาห์</div>
-              <div style="padding:10px;background:var(--blue-l);border-radius:8px;font-size:13px;border-left:3px solid var(--blue)"><strong style="color:#185FA5">การนอนหลับ:</strong> พักผ่อน 7-8 ชั่วโมง/วัน ช่วยควบคุม Cortisol ที่ส่งผลต่อน้ำหนัก</div>
+          <div style="font-size:11px;color:var(--g400);text-transform:uppercase;letter-spacing:.06em">BMI ปัจจุบัน</div>
+          <div style="font-size:22px;font-weight:700" id="ob-bmi-val">—</div>
+          <div style="font-size:12px" id="ob-bmi-cat">—</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:11px;color:var(--g400)">ลดต่อสัปดาห์</div>
+          <div style="font-size:20px;font-weight:700" id="ob-rate">—</div>
+          <div style="font-size:11px" id="ob-rate-note">—</div>
+        </div>
+      </div>
+      <div class="bmi-bar"><div class="bmi-marker" id="ob-bmi-marker" style="left:30%"></div></div>
+      <div class="bmi-labels"><span>ผอม</span><span>ปกติ</span><span>เกิน</span><span>อ้วน</span></div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-ghost" onclick="obNext(1)" style="flex:0 0 auto">← ย้อน</button>
+      <button class="btn btn-primary btn-full" onclick="obNext(3)">ถัดไป →</button>
+    </div>
+  </div>
+
+  <!-- Step 3 -->
+  <div id="ob-step3" style="display:none">
+    <p style="font-size:18px;font-weight:700;margin-bottom:4px">เกือบเสร็จแล้ว ✅</p>
+    <p style="font-size:13px;color:var(--g400);margin-bottom:20px">ตรวจสอบข้อมูลก่อนเริ่มใช้งาน</p>
+    <div id="ob-summary" style="background:var(--g50);border-radius:var(--r2);padding:16px;margin-bottom:20px;font-size:14px;line-height:2"></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-ghost" onclick="obNext(2)" style="flex:0 0 auto">← ย้อน</button>
+      <button class="btn btn-primary btn-full" id="ob-finish-btn" onclick="obFinish()">🚀 เริ่มเลย!</button>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ── MAIN APP ── -->
+<div id="main-app" style="display:none">
+<nav class="topbar">
+  <div class="logo"><div class="logo-dot"></div>สุขภาพดี</div>
+  <div class="nav">
+    <button class="nav-btn active" onclick="showPage('dashboard',this)">📊 <span class="txt">ภาพรวม</span></button>
+    <button class="nav-btn" onclick="showPage('log',this)">✏️ <span class="txt">บันทึก</span></button>
+    <button class="nav-btn" onclick="showPage('rewards',this)">🏆 <span class="txt">รางวัล</span></button>
+    <button class="nav-btn" onclick="showPage('profile',this)">👤 <span class="txt">โปรไฟล์</span></button>
+  </div>
+  <div style="position:relative">
+    <button class="user-btn" id="user-btn" onclick="document.getElementById('umenu').classList.toggle('open')">สม</button>
+    <div class="umenu" id="umenu">
+      <div style="padding:10px 16px;border-bottom:1px solid var(--g100)">
+        <div style="font-size:12px;font-weight:700" id="uname-display">ผู้ใช้</div>
+        <div style="font-size:11px;color:var(--g400)">☁️ ข้อมูลซิงค์บน Firebase</div>
+      </div>
+      <div class="umenu-item" onclick="showPage('profile',null);document.getElementById('umenu').classList.remove('open')">👤 โปรไฟล์</div>
+      <div class="umenu-item" style="color:var(--red)" onclick="window._logout()">🚪 ออกจากระบบ</div>
+    </div>
+  </div>
+</nav>
+
+<!-- DASHBOARD -->
+<div id="page-dashboard" class="page active">
+<div class="container">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+    <div>
+      <p style="font-size:20px;font-weight:700" id="greeting">สวัสดี! 👋</p>
+      <p style="font-size:13px;color:var(--g400)" id="today-date"></p>
+    </div>
+    <button class="btn btn-primary" onclick="showPage('log',document.querySelectorAll('.nav-btn')[1])">✏️ บันทึกวันนี้</button>
+  </div>
+  <div class="metrics" id="metric-cards">
+    <div class="metric"><div class="metric-label">กำลังโหลด</div><div class="metric-value" style="font-size:18px"><span class="spinner"></span>...</div></div>
+  </div>
+  <div class="dash-grid">
+    <div>
+      <div class="card" style="margin-bottom:0">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+          <div class="card-title" style="margin-bottom:0">ความคืบหน้า</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="interval-sel" onchange="rebuildChart()" style="font-size:12px;padding:5px 8px;border-radius:var(--r2);border:1px solid var(--g200);color:var(--g600);background:#fff;cursor:pointer;display:none">
+              <option value="1">ทุกวัน</option>
+              <option value="3">ทุก 3 วัน</option>
+              <option value="7" selected>ทุก 7 วัน</option>
+            </select>
+            <div class="tabs" style="margin-bottom:0;width:auto">
+              <button class="tab active" id="ct-w" onclick="switchChart('weight',this)">น้ำหนัก</button>
+              <button class="tab" id="ct-p" onclick="switchChart('progress',this)">%</button>
+              <button class="tab" id="ct-d" onclick="switchChart('daily',this)">วัน</button>
             </div>
           </div>
         </div>
-      </div>
-    </div>
-
-    <!-- ACHIEVEMENTS -->
-    <div class="page" id="page-achievements">
-      <div style="display:flex;gap:16px;margin-bottom:20px">
-        <div class="card" style="flex:1;text-align:center;padding:20px"><div style="font-size:32px;font-weight:700;color:var(--teal)">6</div><div style="font-size:12px;color:var(--text3)">เหรียญที่ปลดล็อก</div></div>
-        <div class="card" style="flex:1;text-align:center;padding:20px"><div style="font-size:32px;font-weight:700;color:var(--amber)">4</div><div style="font-size:12px;color:var(--text3)">เหรียญที่เหลือ</div></div>
-        <div class="card" style="flex:1;text-align:center;padding:20px"><div style="font-size:32px;font-weight:700;color:var(--purple)">490</div><div style="font-size:12px;color:var(--text3)">คะแนนสะสม</div></div>
-      </div>
-      <div class="ach-grid">
-        <div class="ach-card"><div class="ach-icon">🎯</div><div class="ach-name">เริ่มต้นแล้ว!</div><div class="ach-desc">บันทึกข้อมูลครั้งแรก</div><div class="ach-pts">+10 คะแนน</div></div>
-        <div class="ach-card"><div class="ach-icon">🔥</div><div class="ach-name">7 วันต่อเนื่อง</div><div class="ach-desc">บันทึกครบ 7 วัน</div><div class="ach-pts">+50 คะแนน</div></div>
-        <div class="ach-card"><div class="ach-icon">📉</div><div class="ach-name">ลด 1 กิโลกรัม</div><div class="ach-desc">ก้าวแรกแห่งการเปลี่ยนแปลง</div><div class="ach-pts">+30 คะแนน</div></div>
-        <div class="ach-card"><div class="ach-icon">🏃</div><div class="ach-name">นักกีฬามือใหม่</div><div class="ach-desc">ออกกำลังกาย 10 ครั้ง</div><div class="ach-pts">+80 คะแนน</div></div>
-        <div class="ach-card"><div class="ach-icon">💧</div><div class="ach-name">ดื่มน้ำครบสัปดาห์</div><div class="ach-desc">ดื่มน้ำครบ 7 วัน</div><div class="ach-pts">+60 คะแนน</div></div>
-        <div class="ach-card"><div class="ach-icon">📉</div><div class="ach-name">ลด 3 กิโลกรัม</div><div class="ach-desc">ก้าวหน้าต่อเนื่อง</div><div class="ach-pts">+100 คะแนน</div></div>
-        <div class="ach-card ach-locked"><div class="ach-icon">🏆</div><div class="ach-name">30 วันต่อเนื่อง</div><div class="ach-desc">บันทึกครบ 30 วัน</div><div class="ach-pts">+200 คะแนน</div></div>
-        <div class="ach-card ach-locked"><div class="ach-icon">📉</div><div class="ach-name">ลด 5 กิโลกรัม</div><div class="ach-desc">ความสำเร็จครั้งใหญ่</div><div class="ach-pts">+100 คะแนน</div></div>
-        <div class="ach-card ach-locked"><div class="ach-icon">🥇</div><div class="ach-name">นักกีฬาตัวยง</div><div class="ach-desc">ออกกำลังกาย 50 ครั้ง</div><div class="ach-pts">+200 คะแนน</div></div>
-        <div class="ach-card ach-locked"><div class="ach-icon">👑</div><div class="ach-name">บรรลุเป้าหมาย!</div><div class="ach-desc">ลดน้ำหนักสำเร็จ</div><div class="ach-pts">+1,000 คะแนน</div></div>
-      </div>
-    </div>
-
-    <!-- REPORTS -->
-    <div class="page" id="page-reports">
-      <div class="grid-3" style="margin-bottom:20px">
-        <div class="card" style="text-align:center;padding:20px"><div style="font-size:36px;font-weight:700;color:var(--teal)">-3.5</div><div style="font-size:12px;color:var(--text3)">กก. ลดได้ทั้งหมด</div></div>
-        <div class="card" style="text-align:center;padding:20px"><div style="font-size:36px;font-weight:700">82</div><div style="font-size:12px;color:var(--text3)">คะแนนวินัยเฉลี่ย</div></div>
-        <div class="card" style="text-align:center;padding:20px"><div style="font-size:36px;font-weight:700;color:var(--amber)">28</div><div style="font-size:12px;color:var(--text3)">ครั้งออกกำลังกาย</div></div>
-      </div>
-      <div class="card" style="margin-bottom:20px">
-        <div class="card-title">สรุปแคลอรี่รายสัปดาห์</div>
-        <div style="position:relative;height:220px"><canvas id="c-report"></canvas></div>
-      </div>
-      <div style="display:flex;gap:12px">
-        <button class="btn btn-primary" onclick="showToast('กำลังสร้าง PDF รายงาน...')">📄 Export PDF</button>
-        <button class="btn" onclick="showToast('กำลังสร้าง Excel รายงาน...')">📊 Export Excel</button>
-        <button class="btn" onclick="showToast('ส่งสรุปผ่าน LINE แล้ว ✓')">💬 ส่งผ่าน LINE</button>
-      </div>
-    </div>
-
-  </div><!-- end .app -->
-</div><!-- end #app-screen -->
-
-<!-- MODALS -->
-<div class="modal-overlay" id="modal-weight" onclick="closeModal('modal-weight')">
-  <div class="modal" onclick="event.stopPropagation()">
-    <div class="modal-header"><div class="modal-title">⚖️ บันทึกน้ำหนักวันนี้</div><button class="modal-close" onclick="closeModal('modal-weight')">✕</button></div>
-    <div class="modal-body">
-      <div class="form-group"><label class="form-label">วันที่</label><input type="date" id="inp-date-w" class="form-input" value="2026-06-10"></div>
-      <div class="form-group"><label class="form-label">น้ำหนัก (กก.) *</label><input type="number" id="inp-weight" class="form-input" placeholder="68.5" step="0.1"></div>
-      <div class="form-row">
-        <div class="form-group"><label class="form-label">% ไขมัน</label><input type="number" id="inp-fat" class="form-input" placeholder="22.5" step="0.1"></div>
-        <div class="form-group"><label class="form-label">รอบเอว (ซม.)</label><input type="number" id="inp-waist" class="form-input" placeholder="78"></div>
-      </div>
-      <div class="form-group"><label class="form-label">หมายเหตุ</label><input type="text" id="inp-note" class="form-input" placeholder="หลังตื่นนอน ก่อนอาหาร..."></div>
-    </div>
-    <div class="modal-footer"><button class="btn" onclick="closeModal('modal-weight')">ยกเลิก</button><button class="btn btn-primary" onclick="window._saveWeight()">💾 บันทึก → Firebase</button></div>
-  </div>
-</div>
-
-<div class="modal-overlay" id="modal-food" onclick="closeModal('modal-food')">
-  <div class="modal" onclick="event.stopPropagation()">
-    <div class="modal-header"><div class="modal-title">🍱 บันทึกอาหาร</div><button class="modal-close" onclick="closeModal('modal-food')">✕</button></div>
-    <div class="modal-body">
-      <div class="form-row" style="margin-bottom:14px">
-        <div class="form-group" style="margin-bottom:0"><label class="form-label">มื้ออาหาร</label>
-          <select id="inp-meal" class="form-select"><option value="breakfast">มื้อเช้า</option><option value="lunch">มื้อเที่ยง</option><option value="dinner" selected>มื้อเย็น</option><option value="snack">ของว่าง</option></select>
+        <div class="chart-legend">
+          <div class="legend-item"><div class="legend-dot" style="background:#1D9E75"></div>จริง</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#AFA9EC"></div>เป้าหมาย</div>
         </div>
-        <div class="form-group" style="margin-bottom:0"><label class="form-label">วันที่</label><input type="date" id="inp-date-f" class="form-input" value="2026-06-10"></div>
+        <div style="position:relative;height:220px"><canvas id="mainChart"></canvas></div>
       </div>
-      <div class="form-group"><label class="form-label">ชื่ออาหาร *</label><input type="text" id="inp-food-name" class="form-input" placeholder="เช่น ข้าวมันไก่, ก๋วยเตี๋ยว..."></div>
-      <div class="form-row3">
-        <div class="form-group"><label class="form-label">แคลอรี่</label><input type="number" id="inp-kcal" class="form-input" placeholder="0"></div>
-        <div class="form-group"><label class="form-label">โปรตีน (g)</label><input type="number" id="inp-prot" class="form-input" placeholder="0"></div>
-        <div class="form-group"><label class="form-label">คาร์บ (g)</label><input type="number" id="inp-carb" class="form-input" placeholder="0"></div>
-      </div>
-      <div class="form-group"><label class="form-label">ไขมัน (g)</label><input type="number" id="inp-fat2" class="form-input" placeholder="0"></div>
-      <div style="padding:10px;background:var(--blue-l);border-radius:8px;font-size:12px;color:#185FA5">💡 อัปโหลดรูปอาหาร AI จะวิเคราะห์โภชนาการให้<br><input type="file" accept="image/*" style="margin-top:6px;font-size:11px"></div>
     </div>
-    <div class="modal-footer"><button class="btn" onclick="closeModal('modal-food')">ยกเลิก</button><button class="btn btn-primary" onclick="window._saveFood()">+ บันทึก → Firebase</button></div>
+    <div>
+      <div class="card" style="margin-bottom:12px">
+        <div class="card-title">บันทึกวันนี้</div>
+        <div class="log-list" id="today-log-list"><div class="empty"><div class="empty-icon">📋</div>ยังไม่มีข้อมูลวันนี้</div></div>
+      </div>
+      <div class="card" style="margin-bottom:0;background:var(--purple-l);border-color:#CECBF6">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <div style="width:26px;height:26px;background:var(--purple2);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px">🤖</div>
+          <span style="font-size:12px;font-weight:700;color:#3C3489">AI Coach</span>
+        </div>
+        <p id="ai-tip" style="font-size:13px;color:var(--purple2);line-height:1.6">กำลังวิเคราะห์ข้อมูล...</p>
+      </div>
+    </div>
   </div>
 </div>
+</div>
 
-<div class="toast" id="toast">✓ <span id="toast-msg"></span></div>
+<!-- LOG -->
+<div id="page-log" class="page">
+<div class="container" style="max-width:600px">
+  <p style="font-size:18px;font-weight:700;margin-bottom:4px">บันทึกประจำวัน ✏️</p>
+  <p style="font-size:13px;color:var(--g400);margin-bottom:20px" id="log-date-lbl"></p>
+  <div class="tabs" id="log-tabs">
+    <button class="tab active" onclick="switchLogTab('weight',this)">⚖️ น้ำหนัก</button>
+    <button class="tab" onclick="switchLogTab('food',this)">🍽️ อาหาร</button>
+    <button class="tab" onclick="switchLogTab('exercise',this)">🏃 ออกกำลัง</button>
+    <button class="tab" onclick="switchLogTab('sleep',this)">😴 นอน</button>
+  </div>
+
+  <!-- Weight -->
+  <div id="log-weight" class="card">
+    <div class="card-title">บันทึกน้ำหนัก</div>
+    <div class="form-row">
+      <label>น้ำหนัก (kg)</label>
+      <input type="number" id="w-kg" placeholder="75.5" step="0.1" style="font-size:24px;font-weight:700;text-align:center">
+    </div>
+    <div class="form-row"><label>หมายเหตุ (ไม่บังคับ)</label><input type="text" id="w-note" placeholder="ตื่นเช้า ก่อนอาหาร..."></div>
+    <button class="btn btn-primary btn-full" onclick="doSaveWeight()">บันทึกน้ำหนัก</button>
+  </div>
+
+  <!-- Food -->
+  <div id="log-food" class="card" style="display:none">
+    <div class="card-title">บันทึกมื้ออาหาร</div>
+    <div class="form-row">
+      <label>มื้ออาหาร</label>
+      <div class="chips" style="margin-top:4px">
+        <button class="chip selected" data-meal="breakfast" onclick="selMeal(this)">🌅 เช้า</button>
+        <button class="chip" data-meal="lunch" onclick="selMeal(this)">☀️ กลางวัน</button>
+        <button class="chip" data-meal="dinner" onclick="selMeal(this)">🌙 เย็น</button>
+        <button class="chip" data-meal="snack" onclick="selMeal(this)">🍎 ว่าง</button>
+      </div>
+    </div>
+    <div class="form-row"><label>เมนูอาหาร</label><input type="text" id="f-menu" placeholder="ข้าวกล้อง + ไก่ย่าง..."></div>
+    <div class="form-row"><label>แคลอรี่ (kcal) — ประมาณ</label><input type="number" id="f-cal" placeholder="480"></div>
+    <button class="btn btn-primary btn-full" onclick="doSaveFood()">บันทึกมื้ออาหาร</button>
+    <div id="food-log-list" class="log-list" style="margin-top:16px"></div>
+  </div>
+
+  <!-- Exercise -->
+  <div id="log-exercise" class="card" style="display:none">
+    <div class="card-title">บันทึกการออกกำลังกาย</div>
+    <div class="form-row">
+      <label>ประเภทกิจกรรม</label>
+      <div class="chips" style="margin-top:4px">
+        <button class="chip selected" data-act="running" data-met="9.8" onclick="selAct(this)">🏃 วิ่ง</button>
+        <button class="chip" data-act="walking" data-met="3.5" onclick="selAct(this)">🚶 เดิน</button>
+        <button class="chip" data-act="cycling" data-met="7.5" onclick="selAct(this)">🚴 จักรยาน</button>
+        <button class="chip" data-act="swimming" data-met="8.0" onclick="selAct(this)">🏊 ว่ายน้ำ</button>
+        <button class="chip" data-act="weights" data-met="5.0" onclick="selAct(this)">🏋️ เวท</button>
+        <button class="chip" data-act="hiit" data-met="10.0" onclick="selAct(this)">⚡ HIIT</button>
+        <button class="chip" data-act="yoga" data-met="3.0" onclick="selAct(this)">🧘 โยคะ</button>
+        <button class="chip" data-act="badminton" data-met="6.0" onclick="selAct(this)">🏸 แบดฯ</button>
+        <button class="chip" data-act="jumprope" data-met="11.0" onclick="selAct(this)">⭕ กระโดดเชือก</button>
+      </div>
+    </div>
+    <div class="form-row">
+      <label>ระยะเวลา: <span id="dur-lbl">30</span> นาที</label>
+      <input type="range" min="5" max="120" step="5" value="30" id="e-dur" oninput="updCalEst()" style="width:100%">
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--g400);margin-top:4px"><span>5 น.</span><span>120 น.</span></div>
+    </div>
+    <div class="cal-box">
+      <div><div class="cal-label">แคลอรี่ที่เผา (ประมาณ)</div><div class="cal-val"><span id="cal-burned">260</span> kcal</div></div>
+      <span style="font-size:30px">🔥</span>
+    </div>
+    <button class="btn btn-primary btn-full" style="margin-top:14px" onclick="doSaveExercise()">บันทึกการออกกำลังกาย</button>
+    <div id="exercise-log-list" class="log-list" style="margin-top:16px"></div>
+  </div>
+
+  <!-- Sleep -->
+  <div id="log-sleep" class="card" style="display:none">
+    <div class="card-title">บันทึกการนอนหลับ</div>
+    <div class="form-grid">
+      <div><label>เวลาเข้านอน</label><input type="time" id="s-sleep" value="23:00" oninput="updSleepPrev()"></div>
+      <div><label>เวลาตื่นนอน</label><input type="time" id="s-wake" value="06:30" oninput="updSleepPrev()"></div>
+    </div>
+    <div style="background:var(--blue-l);border:1px solid #B5D4F4;border-radius:var(--r2);padding:14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div>
+        <div style="font-size:11px;color:var(--blue2)">ระยะเวลานอน</div>
+        <div style="font-size:24px;font-weight:700;color:var(--blue2)" id="sleep-prev">7.5 ชม.</div>
+      </div>
+      <span style="font-size:30px">😴</span>
+    </div>
+    <div class="form-row">
+      <label>คุณภาพการนอน</label>
+      <div class="chips" style="margin-top:4px">
+        <button class="chip selected" data-q="5" onclick="selQ(this)">😴 ดีมาก</button>
+        <button class="chip" data-q="4" onclick="selQ(this)">🙂 ดี</button>
+        <button class="chip" data-q="3" onclick="selQ(this)">😐 ปานกลาง</button>
+        <button class="chip" data-q="2" onclick="selQ(this)">😞 แย่</button>
+        <button class="chip" data-q="1" onclick="selQ(this)">😩 แย่มาก</button>
+      </div>
+    </div>
+    <button class="btn btn-primary btn-full" onclick="doSaveSleep()">บันทึกการนอน</button>
+  </div>
+</div>
+</div>
+
+<!-- REWARDS -->
+<div id="page-rewards" class="page">
+<div class="container">
+  <p style="font-size:18px;font-weight:700;margin-bottom:4px">ความสำเร็จ 🏆</p>
+  <p style="font-size:13px;color:var(--g400);margin-bottom:20px" id="badge-summary"></p>
+  <div class="badges-grid" id="badges-grid"></div>
+</div>
+</div>
+
+<!-- PROFILE -->
+<div id="page-profile" class="page">
+<div class="container" style="max-width:520px">
+  <p style="font-size:18px;font-weight:700;margin-bottom:20px">โปรไฟล์ 👤</p>
+  <div class="card">
+    <div class="card-title">ข้อมูลส่วนตัว</div>
+    <div class="form-row"><label>ชื่อ</label><input type="text" id="p-name"></div>
+    <div class="form-grid">
+      <div><label>ส่วนสูง (cm)</label><input type="number" id="p-height" step="0.1"></div>
+      <div><label>วันเกิด</label><input type="date" id="p-birth"></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">เป้าหมาย</div>
+    <div class="form-grid">
+      <div><label>น้ำหนักเริ่มต้น (kg)</label><input type="number" id="p-start" step="0.1"></div>
+      <div><label>น้ำหนักเป้าหมาย (kg)</label><input type="number" id="p-goal" step="0.1"></div>
+    </div>
+    <div class="form-row"><label>วันที่ต้องการบรรลุ</label><input type="date" id="p-target"></div>
+  </div>
+  <button class="btn btn-primary btn-full" onclick="doSaveProfile()">💾 บันทึกโปรไฟล์</button>
+</div>
+</div>
+
+</div><!-- /main-app -->
+
+<div id="toast"></div>
+<div id="confirm-modal" class="modal-bg hidden">
+  <div class="modal-box">
+    <div class="modal-title" id="cm-title"></div>
+    <div class="modal-body" id="cm-body"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeConfirm(false)">ยกเลิก</button>
+      <button class="btn btn-danger" onclick="closeConfirm(true)">ยืนยัน</button>
+    </div>
+  </div>
+</div>
 
 <script>
-const TEAL='#1D9E75',AMBER='#EF9F27',CORAL='#D85A30',BLUE='#378ADD',PURPLE='#7F77DD';
-const GRID='rgba(0,0,0,.06)',TC='#9CA3AF';
-const BASE_OPTS={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{font:{size:11},color:TC}},y:{grid:{color:GRID},ticks:{font:{size:11},color:TC}}}};
-const WEEKS=['WK1','WK2','WK3','WK4','WK5','WK6','WK7','WK8','WK9','WK10','WK11','WK12'];
-const ACTUAL=[72,71.5,71,70.8,70.3,70,69.8,69.5,69.2,68.9,68.7,68.5];
-const TARGET=[72,71.7,71.4,71.1,70.8,70.5,70.2,69.9,69.6,69.3,69.0,68.7];
-const charts={};
-const PAGE_TITLES={dashboard:'แดชบอร์ด',weight:'บันทึกน้ำหนัก',progress:'ความคืบหน้า',food:'บันทึกอาหาร',exercise:'บันทึกการออกกำลังกาย',water:'ติดตามการดื่มน้ำ',fasting:'ระบบอดอาหาร (IF)',ai:'AI Coach',achievements:'ความสำเร็จ',reports:'รายงาน'};
+const todayStr = () => new Date().toISOString().slice(0,10);
+let selGend='male', selMealV='breakfast', selActV='running', selMET=9.8, selQV=5;
+let mainChart=null, chartMode='weight';
+let _weightLogs=[], _confirmRes=null;
 
-function showPage(id, el) {
+// ── ONBOARDING ──────────────────────────────────────────────────────
+function selGender(el){document.querySelectorAll('[data-g]').forEach(b=>b.classList.remove('selected'));el.classList.add('selected');selGend=el.dataset.g;}
+function obBMI(){
+  const w=parseFloat(document.getElementById('ob-weight').value);
+  const h=parseFloat(document.getElementById('ob-height').value)||0;
+  const g=parseFloat(document.getElementById('ob-goal').value);
+  const td=document.getElementById('ob-target').value;
+  const box=document.getElementById('ob-bmi-box');
+  if(!w||!h){box.style.display='none';return;}
+  box.style.display='block';
+  const bmi=calcBMI(w,h);
+  document.getElementById('ob-bmi-val').textContent=bmi.value;
+  document.getElementById('ob-bmi-val').style.color=bmi.color;
+  document.getElementById('ob-bmi-cat').textContent=bmi.label;
+  document.getElementById('ob-bmi-cat').style.color=bmi.color;
+  document.getElementById('ob-bmi-marker').style.left=Math.min(95,Math.max(5,((bmi.value-15)/25)*90))+'%';
+  if(g&&td){
+    const days=Math.max(1,(new Date(td)-Date.now())/86400000);
+    const rate=Math.abs((w-g)/(days/7));
+    document.getElementById('ob-rate').textContent=rate.toFixed(2)+' kg';
+    const safe=rate<=1;
+    document.getElementById('ob-rate-note').textContent=safe?'✅ ปลอดภัย':'⚠️ เร็วเกินไป';
+    document.getElementById('ob-rate').style.color=safe?'var(--teal2)':'var(--amber2)';
+  }
+}
+function obNext(n){
+  if(n===2){
+    const name=document.getElementById('ob-name').value.trim();
+    const h=document.getElementById('ob-height').value;
+    if(!name||!h){window._toast('กรุณากรอกชื่อและส่วนสูง');return;}
+  }
+  if(n===3){
+    const w=document.getElementById('ob-weight').value;
+    const g=document.getElementById('ob-goal').value;
+    if(!w||!g){window._toast('กรุณากรอกน้ำหนักและเป้าหมาย');return;}
+    const p={
+      name:document.getElementById('ob-name').value.trim(),
+      gender:selGend,
+      height:parseFloat(document.getElementById('ob-height').value),
+      birth:document.getElementById('ob-birth').value,
+      startWeight:parseFloat(w),
+      goalWeight:parseFloat(g),
+      targetDate:document.getElementById('ob-target').value,
+      createdAt:todayStr()
+    };
+    const bmi=calcBMI(p.startWeight,p.height);
+    document.getElementById('ob-summary').innerHTML=`
+      <b>${p.name}</b> ${p.gender==='male'?'ชาย':p.gender==='female'?'หญิง':'อื่น ๆ'}<br>
+      ส่วนสูง: ${p.height} cm &nbsp;|&nbsp; BMI: ${bmi.value} (${bmi.label})<br>
+      น้ำหนักเริ่มต้น: <b>${p.startWeight} kg</b> → เป้าหมาย: <b>${p.goalWeight} kg</b><br>
+      ${p.targetDate?'ถึง: '+new Date(p.targetDate).toLocaleDateString('th-TH'):''}
+    `;
+  }
+  [1,2,3].forEach(i=>{
+    document.getElementById('ob-step'+i).style.display=i===n?'block':'none';
+    const d=document.getElementById('sd'+i);
+    d.classList.toggle('active',i===n);
+    d.classList.toggle('done',i<n);
+  });
+}
+async function obFinish(){
+  const btn=document.getElementById('ob-finish-btn');
+  btn.disabled=true;btn.innerHTML='<span class="spinner"></span> กำลังบันทึก...';
+  const p={
+    name:document.getElementById('ob-name').value.trim(),
+    gender:selGend,
+    height:parseFloat(document.getElementById('ob-height').value),
+    birth:document.getElementById('ob-birth').value,
+    startWeight:parseFloat(document.getElementById('ob-weight').value),
+    goalWeight:parseFloat(document.getElementById('ob-goal').value),
+    targetDate:document.getElementById('ob-target').value,
+    createdAt:todayStr()
+  };
+  await window._saveProfileFB(p);
+  await window._saveWeight(p.startWeight,'น้ำหนักเริ่มต้น');
+  document.getElementById('onboarding-page').style.display='none';
+  window._startApp();
+}
+
+// ── APP INIT ─────────────────────────────────────────────────────────
+window._startApp = async () => {
+  const p=window._profile;
+  document.getElementById('main-app').style.display='block';
+  document.getElementById('greeting').textContent='สวัสดี, '+p.name+' 👋';
+  document.getElementById('today-date').textContent=formatDate(todayStr());
+  document.getElementById('log-date-lbl').textContent=formatDate(todayStr());
+  document.getElementById('uname-display').textContent=p.name;
+  const ab=p.name.slice(0,2).toUpperCase();
+  document.getElementById('user-btn').textContent=ab;
+  loadProfile();
+  updCalEst();
+  updSleepPrev();
+  _weightLogs=await window._loadWeights();
+  loadDashboard();
+  loadRewards();
+  loadTodayFoodLog();
+  loadTodayExerciseLog();
+};
+
+// ── DASHBOARD ────────────────────────────────────────────────────────
+function loadDashboard(){
+  const p=window._profile;
+  const latest=_weightLogs.length?_weightLogs[_weightLogs.length-1].kg:p.startWeight;
+  const bmi=calcBMI(latest,p.height);
+  const lost=Math.round((p.startWeight-latest)*10)/10;
+  const pct=calcPct(p.startWeight,latest,p.goalWeight);
+  document.getElementById('metric-cards').innerHTML=`
+    <div class="metric">
+      <div class="metric-label">น้ำหนักปัจจุบัน</div>
+      <div class="metric-value">${latest}<span class="metric-unit">kg</span></div>
+      <div class="metric-sub good">${lost>=0?'▼ ลด '+lost+' kg':'▲ เพิ่ม '+Math.abs(lost)+' kg'}</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">เป้าหมาย</div>
+      <div class="metric-value">${p.goalWeight}<span class="metric-unit">kg</span></div>
+      <div class="metric-sub">เหลือ ${Math.max(0,Math.round((latest-p.goalWeight)*10)/10)} kg</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">BMI</div>
+      <div class="metric-value" style="color:${bmi.color}">${bmi.value}</div>
+      <div class="metric-sub">${bmi.label}</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Progress</div>
+      <div class="metric-value" style="color:var(--teal)">${pct}<span class="metric-unit">%</span></div>
+      <div class="metric-sub good">สัปดาห์ที่ ${getWeekNum()}</div>
+    </div>
+  `;
+  buildChart();
+  loadTodayLogDash();
+  updateAI(latest);
+}
+
+function buildChart(){
+  const p=window._profile;
+  if(!p)return;
+  const startDate=new Date(p.createdAt||todayStr());
+  const endDate=p.targetDate?new Date(p.targetDate):addWks(startDate,16);
+  const totalWks=Math.max(1,Math.ceil((endDate-startDate)/(7*86400000)));
+  const wklyLoss=(p.startWeight-p.goalWeight)/totalWks;
+  const ctx=document.getElementById('mainChart').getContext('2d');
+  if(mainChart)mainChart.destroy();
+  const byWk={};
+  _weightLogs.forEach(({date,kg})=>{
+    const wk=Math.floor((new Date(date)-startDate)/(7*86400000));
+    if(!byWk[wk])byWk[wk]=[];
+    byWk[wk].push(kg);
+  });
+  if(chartMode==='daily'){
+    document.getElementById('interval-sel').style.display='';
+    const interval=parseInt(document.getElementById('interval-sel').value||7);
+    const totalDays=Math.ceil((endDate-startDate)/86400000);
+    const labels=[],tgt=[],actMap={};
+    _weightLogs.forEach(({date,kg})=>actMap[date]=kg);
+    for(let d=0;d<=totalDays;d++){
+      const dt=new Date(startDate);dt.setDate(startDate.getDate()+d);
+      const ds=dt.toISOString().slice(0,10);
+      labels.push(d%interval===0?dt.toLocaleDateString('th-TH',{day:'numeric',month:'short'}):'');
+      tgt.push(Math.round((p.startWeight-(p.startWeight-p.goalWeight)*(d/totalDays))*10)/10);
+    }
+    const act=labels.map((_,i)=>{const dt=new Date(startDate);dt.setDate(startDate.getDate()+i);return actMap[dt.toISOString().slice(0,10)]??null;});
+    mainChart=new Chart(ctx,{type:'line',data:{labels,datasets:[
+      {label:'จริง',data:act,borderColor:'#1D9E75',backgroundColor:'rgba(29,158,117,.07)',borderWidth:2,pointBackgroundColor:'#1D9E75',pointRadius:act.map(v=>v!==null?5:0),tension:.3,fill:true,spanGaps:false},
+      {label:'เป้า',data:tgt,borderColor:'#AFA9EC',borderDash:[5,4],borderWidth:1.5,pointRadius:0,tension:.4,fill:false}
+    ]},options:chartOpts(p,false)});
+    return;
+  }
+  const labels=[],actW=[],tgtW=[],actP=[],tgtP=[];
+  for(let w=0;w<=totalWks;w++){
+    labels.push('WK'+(w+1));
+    const t=Math.round((p.startWeight-wklyLoss*w)*10)/10;
+    tgtW.push(t);tgtP.push(Math.min(100,Math.round((w/totalWks)*100)));
+    if(byWk[w]){const avg=Math.round(byWk[w].reduce((a,b)=>a+b,0)/byWk[w].length*10)/10;actW.push(avg);actP.push(calcPct(p.startWeight,avg,p.goalWeight));}
+    else{actW.push(null);actP.push(null);}
+  }
+  document.getElementById('interval-sel').style.display='none';
+  mainChart=new Chart(ctx,{type:'line',data:{labels,datasets:[
+    {label:'จริง',data:chartMode==='weight'?actW:actP,borderColor:'#1D9E75',backgroundColor:'rgba(29,158,117,.07)',borderWidth:2,pointBackgroundColor:'#1D9E75',pointRadius:4,tension:.4,fill:true,spanGaps:false},
+    {label:'เป้า',data:chartMode==='weight'?tgtW:tgtP,borderColor:'#AFA9EC',borderDash:[5,4],borderWidth:1.5,pointRadius:2,tension:.4,fill:false}
+  ]},options:chartOpts(window._profile,chartMode==='progress')});
+}
+
+function chartOpts(p,isPct){
+  return{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+    scales:{x:{grid:{color:'rgba(0,0,0,.04)'},ticks:{font:{size:10},color:'#888780',autoSkip:false,maxRotation:45}},
+            y:{grid:{color:'rgba(0,0,0,.04)'},ticks:{font:{size:11},color:'#888780',callback:v=>isPct?v+'%':v+' kg'},
+               min:isPct?0:Math.floor(p.goalWeight-2),max:isPct?100:Math.ceil(p.startWeight+1)}}};
+}
+
+function switchChart(mode,btn){
+  chartMode=mode;
+  document.getElementById('ct-w').classList.toggle('active',mode==='weight');
+  document.getElementById('ct-p').classList.toggle('active',mode==='progress');
+  document.getElementById('ct-d').classList.toggle('active',mode==='daily');
+  buildChart();
+}
+function rebuildChart(){buildChart();}
+
+async function loadTodayLogDash(){
+  const foods=await window._loadFoods(todayStr());
+  const exs=await window._loadExercises(todayStr());
+  const wlog=_weightLogs.find(w=>w.date===todayStr());
+  const items=[];
+  if(wlog) items.push(`<div class="log-item"><div class="log-icon run">⚖️</div><div class="log-meta"><div class="log-name">${wlog.kg} kg</div><div class="log-sub">น้ำหนัก</div></div></div>`);
+  foods.forEach(f=>items.push(`<div class="log-item"><div class="log-icon food">🍽️</div><div class="log-meta"><div class="log-name">${f.menu}</div><div class="log-sub">${mealLbl(f.meal)}${f.cal?' • '+f.cal+' kcal':''}</div></div></div>`));
+  exs.forEach(e=>items.push(`<div class="log-item"><div class="log-icon run">🏃</div><div class="log-meta"><div class="log-name">${actLbl(e.activity)}</div><div class="log-sub">${e.duration} นาที • ${e.burned} kcal</div></div></div>`));
+  document.getElementById('today-log-list').innerHTML=items.length?items.join(''):'<div class="empty"><div class="empty-icon">📋</div>ยังไม่มีข้อมูลวันนี้</div>';
+}
+
+function updateAI(latest){
+  const p=window._profile;
+  const lost=Math.round((p.startWeight-latest)*10)/10;
+  const pct=calcPct(p.startWeight,latest,p.goalWeight);
+  let tip='';
+  if(pct>=100) tip='🎊 ยอดเยี่ยมมาก! คุณบรรลุเป้าหมายแล้ว! ขอแสดงความยินดี!';
+  else if(lost<=0) tip='💪 เริ่มต้นดีแล้ว! พยายามบันทึกข้อมูลทุกวัน แล้วคุณจะเห็นความก้าวหน้า';
+  else if(pct>50) tip=`🎯 ทำได้ดีมาก! ผ่านมาแล้ว ${pct}% ลดได้ ${lost} kg แล้ว ใกล้ถึงเป้าหมายแล้ว!`;
+  else tip=`💚 ลดไปแล้ว ${lost} kg (${pct}%) ของเป้าหมาย ทำต่อไปนะ ทุกวันที่บันทึกคือความสำเร็จ!`;
+  document.getElementById('ai-tip').textContent=tip;
+}
+
+// ── LOG ACTIONS ──────────────────────────────────────────────────────
+async function doSaveWeight(){
+  const kg=parseFloat(document.getElementById('w-kg').value);
+  if(!kg){window._toast('กรุณากรอกน้ำหนัก');return;}
+  const note=document.getElementById('w-note').value.trim();
+  await window._saveWeight(kg,note);
+  document.getElementById('w-kg').value='';
+  document.getElementById('w-note').value='';
+  window._toast('✅ บันทึกน้ำหนัก '+kg+' kg แล้ว!');
+  _weightLogs=await window._loadWeights();
+  loadDashboard();
+  checkBadges();
+}
+
+function selMeal(el){document.querySelectorAll('[data-meal]').forEach(b=>b.classList.remove('selected'));el.classList.add('selected');selMealV=el.dataset.meal;}
+async function doSaveFood(){
+  const menu=document.getElementById('f-menu').value.trim();
+  if(!menu){window._toast('กรุณากรอกเมนูอาหาร');return;}
+  const cal=parseInt(document.getElementById('f-cal').value)||0;
+  await window._saveFood(todayStr(),selMealV,menu,cal);
+  document.getElementById('f-menu').value='';
+  document.getElementById('f-cal').value='';
+  window._toast('✅ บันทึกอาหารแล้ว!');
+  loadTodayFoodLog();
+  loadTodayLogDash();
+  checkBadges();
+}
+async function loadTodayFoodLog(){
+  const foods=await window._loadFoods(todayStr());
+  const el=document.getElementById('food-log-list');
+  if(!foods.length){el.innerHTML='';return;}
+  el.innerHTML=foods.map(f=>`<div class="log-item"><div class="log-icon food">🍽️</div><div class="log-meta"><div class="log-name">${f.menu}</div><div class="log-sub">${mealLbl(f.meal)}${f.cal?' • '+f.cal+' kcal':''}</div></div><button class="log-del" onclick="doDelFood('${f.id}')">✕</button></div>`).join('');
+}
+async function doDelFood(id){await window._deleteFood(id);loadTodayFoodLog();loadTodayLogDash();}
+
+function selAct(el){document.querySelectorAll('[data-act]').forEach(b=>b.classList.remove('selected'));el.classList.add('selected');selActV=el.dataset.act;selMET=parseFloat(el.dataset.met);updCalEst();}
+function updCalEst(){
+  const dur=parseInt(document.getElementById('e-dur')?.value||30);
+  const p=window._profile;
+  const w=p?(_weightLogs.slice(-1)[0]?.kg||p.startWeight):70;
+  document.getElementById('cal-burned').textContent=Math.round(selMET*w*(dur/60));
+  document.getElementById('dur-lbl').textContent=dur;
+}
+async function doSaveExercise(){
+  const dur=parseInt(document.getElementById('e-dur').value);
+  const p=window._profile;
+  const w=_weightLogs.slice(-1)[0]?.kg||p.startWeight;
+  const burned=Math.round(selMET*w*(dur/60));
+  await window._saveExercise(todayStr(),selActV,dur,burned);
+  window._toast('✅ บันทึกออกกำลังกาย '+dur+' นาที แล้ว!');
+  loadTodayExerciseLog();
+  loadTodayLogDash();
+  checkBadges();
+}
+async function loadTodayExerciseLog(){
+  const exs=await window._loadExercises(todayStr());
+  const el=document.getElementById('exercise-log-list');
+  if(!exs.length){el.innerHTML='';return;}
+  el.innerHTML=exs.map(e=>`<div class="log-item"><div class="log-icon run">🏃</div><div class="log-meta"><div class="log-name">${actLbl(e.activity)}</div><div class="log-sub">${e.duration} นาที • ${e.burned} kcal</div></div><button class="log-del" onclick="doDelExercise('${e.id}')">✕</button></div>`).join('');
+}
+async function doDelExercise(id){await window._deleteExercise(id);loadTodayExerciseLog();loadTodayLogDash();}
+
+function selQ(el){document.querySelectorAll('[data-q]').forEach(b=>b.classList.remove('selected'));el.classList.add('selected');selQV=parseInt(el.dataset.q);}
+function updSleepPrev(){
+  const s=document.getElementById('s-sleep')?.value||'23:00';
+  const w=document.getElementById('s-wake')?.value||'06:30';
+  const h=sleepHrs(s,w);
+  const el=document.getElementById('sleep-prev');
+  if(el)el.textContent=h.toFixed(1)+' ชม.';
+}
+async function doSaveSleep(){
+  const s=document.getElementById('s-sleep').value;
+  const w=document.getElementById('s-wake').value;
+  const h=sleepHrs(s,w);
+  await window._saveSleep(todayStr(),s,w,h,selQV);
+  window._toast('✅ บันทึกการนอน '+h.toFixed(1)+' ชม. แล้ว!');
+  loadTodayLogDash();
+  checkBadges();
+}
+
+// ── PROFILE ──────────────────────────────────────────────────────────
+function loadProfile(){
+  const p=window._profile;
+  if(!p)return;
+  document.getElementById('p-name').value=p.name||'';
+  document.getElementById('p-height').value=p.height||'';
+  document.getElementById('p-birth').value=p.birth||'';
+  document.getElementById('p-start').value=p.startWeight||'';
+  document.getElementById('p-goal').value=p.goalWeight||'';
+  document.getElementById('p-target').value=p.targetDate||'';
+}
+async function doSaveProfile(){
+  const p={...window._profile,
+    name:document.getElementById('p-name').value.trim(),
+    height:parseFloat(document.getElementById('p-height').value),
+    birth:document.getElementById('p-birth').value,
+    startWeight:parseFloat(document.getElementById('p-start').value),
+    goalWeight:parseFloat(document.getElementById('p-goal').value),
+    targetDate:document.getElementById('p-target').value
+  };
+  await window._saveProfileFB(p);
+  window._toast('✅ บันทึกโปรไฟล์แล้ว!');
+  loadDashboard();
+}
+
+// ── BADGES ───────────────────────────────────────────────────────────
+const BADGES=[
+  {id:'first_log',emoji:'🌱',name:'First Step',desc:'บันทึกข้อมูลครั้งแรก',check:()=>_weightLogs.length>0},
+  {id:'lost1',emoji:'⚖️',name:'ลด 1 kg',desc:'ลดน้ำหนักได้ 1 กก.',check:()=>{const p=window._profile;const l=_weightLogs;return p&&l.length&&(p.startWeight-l.slice(-1)[0].kg)>=1;}},
+  {id:'lost5',emoji:'🎯',name:'ลด 5 kg',desc:'ลดน้ำหนักได้ 5 กก.',check:()=>{const p=window._profile;const l=_weightLogs;return p&&l.length&&(p.startWeight-l.slice(-1)[0].kg)>=5;}},
+  {id:'half',emoji:'💪',name:'ครึ่งทาง',desc:'Progress ถึง 50%',check:()=>{const p=window._profile;const l=_weightLogs;return p&&l.length&&calcPct(p.startWeight,l.slice(-1)[0].kg,p.goalWeight)>=50;}},
+  {id:'goal',emoji:'🎊',name:'บรรลุเป้าหมาย!',desc:'ลดน้ำหนักถึงเป้า!',check:()=>{const p=window._profile;const l=_weightLogs;return p&&l.length&&calcPct(p.startWeight,l.slice(-1)[0].kg,p.goalWeight)>=100;}},
+  {id:'log7',emoji:'🔥',name:'7 วันต่อเนื่อง',desc:'บันทึกน้ำหนัก 7 ครั้ง',check:()=>_weightLogs.length>=7},
+  {id:'log30',emoji:'⚡',name:'30 ครั้ง',desc:'บันทึกน้ำหนัก 30 ครั้ง',check:()=>_weightLogs.length>=30},
+];
+const _earnedBadges=new Set(JSON.parse(localStorage.getItem('badges_'+window?._uid)||'[]'));
+function checkBadges(){
+  BADGES.forEach(b=>{
+    if(!_earnedBadges.has(b.id)&&b.check()){
+      _earnedBadges.add(b.id);
+      localStorage.setItem('badges_'+(window._uid||'x'),JSON.stringify([..._earnedBadges]));
+      window._toast('🏆 ได้รับรางวัล: '+b.name+' '+b.emoji);
+    }
+  });
+  loadRewards();
+}
+function loadRewards(){
+  document.getElementById('badge-summary').textContent=`ได้รับแล้ว ${_earnedBadges.size} / ${BADGES.length} รางวัล`;
+  document.getElementById('badges-grid').innerHTML=BADGES.map(b=>{
+    const e=_earnedBadges.has(b.id);
+    return`<div class="badge-card ${e?'earned':'locked'}">
+      <span class="badge-emoji">${b.emoji}</span>
+      <div class="badge-name">${b.name}</div>
+      <div class="badge-desc">${b.desc}</div>
+      ${e?'<div style="font-size:10px;margin-top:6px;color:var(--teal)">✓ ได้รับแล้ว</div>':''}
+    </div>`;
+  }).join('');
+}
+
+// ── NAV ──────────────────────────────────────────────────────────────
+function showPage(name,btn){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-  document.getElementById('page-'+id).classList.add('active');
-  if(el){document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));el.classList.add('active');}
-  const el2=document.getElementById('page-title-text');
-  if(el2)el2.textContent=PAGE_TITLES[id]||id;
-  setTimeout(()=>initChart(id),50);
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  if(btn)btn.classList.add('active');
+  document.getElementById('umenu').classList.remove('open');
+  if(name==='rewards')loadRewards();
 }
-function switchTab(el){el.closest('.tabs-bar').querySelectorAll('.tab-btn').forEach(t=>t.classList.remove('active'));el.classList.add('active');}
-function openModal(id){document.getElementById(id).classList.add('open');}
-function closeModal(id){document.getElementById(id).classList.remove('open');}
-function showToast(msg){const t=document.getElementById('toast');document.getElementById('toast-msg').textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2800);}
-
-let waterMl=2100;
-function addWater(ml){
-  waterMl=Math.max(0,Math.min(waterMl+ml,3000));
-  const p=waterMl/3000;
-  document.getElementById('water-display').textContent=(waterMl/1000).toFixed(1);
-  document.getElementById('water-prog').style.width=Math.round(p*100)+'%';
-  document.getElementById('water-ring-fill').setAttribute('stroke-dashoffset',175.9*(1-p));
-  showToast('บันทึกน้ำ +'+ml+' ml ✓');
+function switchLogTab(tab,btn){
+  ['weight','food','exercise','sleep'].forEach(t=>document.getElementById('log-'+t).style.display=t===tab?'block':'none');
+  document.querySelectorAll('#log-tabs .tab').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
 }
-function addWater2(ml){
-  waterMl=Math.max(0,Math.min(waterMl+ml,3000));
-  const p=waterMl/3000;
-  document.getElementById('water-big-display').textContent=waterMl.toLocaleString('th-TH');
-  const rem=3000-waterMl;
-  document.getElementById('water-remaining-text').innerHTML=rem>0?'เหลืออีก <strong style="color:var(--teal)">'+rem+' ml</strong> ถึงเป้าหมายวันนี้ 💧':'<strong style="color:var(--teal)">ถึงเป้าหมายแล้ว! 🎉</strong>';
-  document.getElementById('water-big-ring').setAttribute('stroke-dashoffset',502.7*(1-p));
-  if(ml>0)showToast('บันทึกน้ำ +'+ml+' ml ✓');
-}
-
-let ifSec=37425;
-setInterval(()=>{
-  ifSec++;
-  const h=Math.floor(ifSec/3600),m=Math.floor((ifSec%3600)/60),s=ifSec%60;
-  const el=document.getElementById('if-timer');
-  if(el)el.textContent=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
-},1000);
-
-function initChart(page) {
-  if(page==='dashboard'&&!charts.w){
-    charts.w=new Chart(document.getElementById('c-weight'),{type:'line',data:{labels:WEEKS,datasets:[
-      {data:ACTUAL,borderColor:TEAL,backgroundColor:'rgba(29,158,117,.08)',fill:true,tension:.4,pointRadius:3,pointBackgroundColor:TEAL,borderWidth:2},
-      {data:TARGET,borderColor:AMBER,borderDash:[4,4],fill:false,tension:.4,pointRadius:0,borderWidth:1.5}
-    ]},options:{...BASE_OPTS,scales:{...BASE_OPTS.scales,y:{...BASE_OPTS.scales.y,min:67,max:73,ticks:{callback:v=>v+' กก.',font:{size:11},color:TC}}}}});
-    charts.p=new Chart(document.getElementById('c-progress'),{type:'line',data:{labels:WEEKS,datasets:[
-      {data:[5,10,15,20,25,30,35,40,45,50,55,60],borderColor:AMBER,borderDash:[4,4],fill:false,tension:.4,pointRadius:2,borderWidth:1.5},
-      {data:ACTUAL.map(w=>Math.round((72-w)/(72-65)*100)),borderColor:TEAL,backgroundColor:'rgba(29,158,117,.08)',fill:true,tension:.4,pointRadius:3,pointBackgroundColor:TEAL,borderWidth:2}
-    ]},options:{...BASE_OPTS,scales:{...BASE_OPTS.scales,y:{...BASE_OPTS.scales.y,min:0,max:100,ticks:{callback:v=>v+'%',font:{size:11},color:TC}}}}});
-  }
-  if(page==='weight'&&!charts.w2){
-    charts.w2=new Chart(document.getElementById('c-weight2'),{type:'line',data:{labels:['WK8','WK9','WK10','WK11','WK12'],datasets:[
-      {data:[69.5,69.2,68.9,68.7,68.5],borderColor:TEAL,backgroundColor:'rgba(29,158,117,.1)',fill:true,tension:.4,pointRadius:4,pointBackgroundColor:TEAL,borderWidth:2.5}
-    ]},options:{...BASE_OPTS,scales:{...BASE_OPTS.scales,y:{...BASE_OPTS.scales.y,min:68,max:70.5,ticks:{font:{size:11},color:TC}}}}});
-  }
-  if(page==='progress'&&!charts.p2){
-    charts.p2=new Chart(document.getElementById('c-progress2'),{type:'line',data:{labels:WEEKS,datasets:[
-      {label:'เป้าหมาย',data:TARGET,borderColor:AMBER,borderDash:[4,4],fill:false,tension:.4,pointRadius:2,borderWidth:1.5},
-      {label:'น้ำหนักจริง',data:ACTUAL,borderColor:TEAL,backgroundColor:'rgba(29,158,117,.08)',fill:true,tension:.4,pointRadius:3,pointBackgroundColor:TEAL,borderWidth:2.5}
-    ]},options:{...BASE_OPTS,plugins:{legend:{display:true,labels:{font:{size:11},color:TC,boxWidth:12}}},scales:{...BASE_OPTS.scales,y:{...BASE_OPTS.scales.y,min:67,max:73,ticks:{callback:v=>v+' กก.',font:{size:11},color:TC}}}}});
-    charts.ew=new Chart(document.getElementById('c-exercise-week'),{type:'bar',data:{labels:['จ','อ','พ','พฤ','ศ','ส','อา'],datasets:[{data:[320,0,350,280,160,0,500],backgroundColor:[TEAL,'#EEF0F5',TEAL,TEAL,TEAL,'#EEF0F5',TEAL],borderRadius:4}]},options:{...BASE_OPTS,scales:{...BASE_OPTS.scales,y:{...BASE_OPTS.scales.y,ticks:{callback:v=>v+'',font:{size:10},color:TC}}}}});
-    charts.bmi=new Chart(document.getElementById('c-bmi'),{type:'line',data:{labels:WEEKS,datasets:[{data:[24.3,24.2,24.0,23.9,23.7,23.6,23.5,23.4,23.3,23.2,23.2,23.1],borderColor:BLUE,backgroundColor:'rgba(55,138,221,.08)',fill:true,tension:.4,pointRadius:3,pointBackgroundColor:BLUE,borderWidth:2}]},options:{...BASE_OPTS,scales:{...BASE_OPTS.scales,y:{...BASE_OPTS.scales.y,min:22,max:25,ticks:{font:{size:11},color:TC}}}}});
-  }
-  if(page==='water'&&!charts.wat){
-    charts.wat=new Chart(document.getElementById('c-water'),{type:'bar',data:{labels:['จ','อ','พ','พฤ','ศ','ส','อา'],datasets:[{data:[2800,3100,2400,3000,2900,3000,2100],backgroundColor:[TEAL,TEAL,AMBER,TEAL,TEAL,TEAL,'rgba(29,158,117,.4)'],borderRadius:5}]},options:{...BASE_OPTS,scales:{...BASE_OPTS.scales,y:{...BASE_OPTS.scales.y,min:0,max:3500,ticks:{callback:v=>(v/1000).toFixed(1)+'L',font:{size:11},color:TC}}}}});
-  }
-  if(page==='ai'&&!charts.tr){
-    charts.tr=new Chart(document.getElementById('c-trend'),{type:'line',data:{labels:WEEKS,datasets:[
-      {label:'น้ำหนัก',data:ACTUAL,borderColor:TEAL,tension:.4,pointRadius:2,borderWidth:2,yAxisID:'y'},
-      {label:'คะแนนวินัย',data:[70,75,72,80,78,85,82,88,84,86,88,82],borderColor:PURPLE,tension:.4,pointRadius:2,borderWidth:2,borderDash:[3,3],yAxisID:'y2'}
-    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,labels:{font:{size:10},color:TC,boxWidth:10}}},scales:{x:{grid:{display:false},ticks:{font:{size:10},color:TC}},y:{position:'left',min:67,max:73,grid:{color:GRID},ticks:{callback:v=>v+'กก.',font:{size:10},color:TC}},y2:{position:'right',min:0,max:100,grid:{display:false},ticks:{font:{size:10},color:TC}}}}});
-  }
-  if(page==='reports'&&!charts.rpt){
-    charts.rpt=new Chart(document.getElementById('c-report'),{type:'bar',data:{labels:WEEKS,datasets:[
-      {label:'แคลอรี่รับ',data:[1800,1750,1700,1680,1710,1650,1680,1700,1690,1710,1680,1420],backgroundColor:'rgba(29,158,117,.7)',borderRadius:3},
-      {label:'kcal เผา',data:[300,450,400,500,380,520,480,500,460,490,480,500],backgroundColor:'rgba(239,159,39,.7)',borderRadius:3}
-    ]},options:{...BASE_OPTS,plugins:{legend:{display:true,labels:{font:{size:11},color:TC,boxWidth:12}}},scales:{...BASE_OPTS.scales,y:{...BASE_OPTS.scales.y,ticks:{callback:v=>v+'',font:{size:10},color:TC}}}}});
-  }
-}
-
-window.addEventListener('load',()=>initChart('dashboard'));
-
-// ─── HISTORY DATA ───
-const MONTHS = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
-function fmtDate(d){return d.getDate()+' '+MONTHS[d.getMonth()]+' '+(d.getFullYear()-543+2569-2569+543);}
-function mkDate(y,m,d){return new Date(y,m-1,d);}
-
-const WEIGHT_DATA = [
-  {date:mkDate(2026,6,10),w:68.5,fat:22.1,waist:77,note:'ตื่นเช้า'},
-  {date:mkDate(2026,6,9),w:68.7,fat:22.3,waist:77,note:''},
-  {date:mkDate(2026,6,8),w:69.0,fat:22.5,waist:78,note:'หลังออกกำลังกาย'},
-  {date:mkDate(2026,6,7),w:68.9,fat:22.4,waist:77,note:''},
-  {date:mkDate(2026,6,6),w:69.2,fat:22.6,waist:78,note:''},
-  {date:mkDate(2026,6,5),w:69.3,fat:22.7,waist:78,note:'วันพักผ่อน'},
-  {date:mkDate(2026,6,4),w:69.5,fat:22.8,waist:79,note:''},
-  {date:mkDate(2026,6,3),w:69.8,fat:23.0,waist:79,note:''},
-  {date:mkDate(2026,6,2),w:70.0,fat:23.1,waist:80,note:''},
-  {date:mkDate(2026,6,1),w:70.1,fat:23.2,waist:80,note:''},
-  {date:mkDate(2026,5,31),w:70.3,fat:23.3,waist:80,note:''},
-  {date:mkDate(2026,5,30),w:70.2,fat:23.2,waist:80,note:''},
-  {date:mkDate(2026,5,29),w:70.5,fat:23.4,waist:81,note:''},
-  {date:mkDate(2026,5,28),w:70.8,fat:23.6,waist:81,note:'เริ่มสัปดาห์ใหม่'},
-  {date:mkDate(2026,5,27),w:71.0,fat:23.8,waist:82,note:''},
-  {date:mkDate(2026,5,26),w:71.2,fat:23.9,waist:82,note:''},
-  {date:mkDate(2026,5,25),w:71.5,fat:24.1,waist:83,note:''},
-  {date:mkDate(2026,5,24),w:71.3,fat:23.9,waist:82,note:''},
-  {date:mkDate(2026,5,23),w:71.6,fat:24.2,waist:83,note:''},
-  {date:mkDate(2026,5,22),w:71.8,fat:24.3,waist:83,note:''},
-  {date:mkDate(2026,5,21),w:72.0,fat:24.5,waist:84,note:'เริ่มต้น'},
-];
-
-const FOOD_DATA = [
-  {date:mkDate(2026,6,10),meal:'breakfast',name:'ข้าวต้มหมู',kcal:280,p:15,c:38,f:6},
-  {date:mkDate(2026,6,10),meal:'breakfast',name:'ไข่ดาว',kcal:100,p:7,c:1,f:8},
-  {date:mkDate(2026,6,10),meal:'lunch',name:'ข้าวหน้าไก่',kcal:480,p:28,c:62,f:12},
-  {date:mkDate(2026,6,10),meal:'lunch',name:'ผักบุ้งผัดน้ำมันหอย',kcal:140,p:5,c:8,f:10},
-  {date:mkDate(2026,6,10),meal:'snack',name:'แอปเปิ้ลเขียว',kcal:85,p:0,c:22,f:0},
-  {date:mkDate(2026,6,10),meal:'dinner',name:'ผัดผักรวมไข่ขาว',kcal:335,p:22,c:18,f:20},
-  {date:mkDate(2026,6,9),meal:'breakfast',name:'โจ๊กหมูสับ',kcal:320,p:18,c:42,f:8},
-  {date:mkDate(2026,6,9),meal:'lunch',name:'ก๋วยเตี๋ยวน้ำใส',kcal:380,p:24,c:48,f:6},
-  {date:mkDate(2026,6,9),meal:'dinner',name:'ต้มยำปลา',kcal:290,p:26,c:12,f:14},
-  {date:mkDate(2026,6,9),meal:'snack',name:'กล้วยหอม',kcal:90,p:1,c:23,f:0},
-  {date:mkDate(2026,6,8),meal:'breakfast',name:'ไข่คนนม',kcal:180,p:12,c:4,f:13},
-  {date:mkDate(2026,6,8),meal:'breakfast',name:'ขนมปังโฮลวีต',kcal:140,p:5,c:26,f:2},
-  {date:mkDate(2026,6,8),meal:'lunch',name:'สลัดไก่ย่าง',kcal:320,p:32,c:14,f:16},
-  {date:mkDate(2026,6,8),meal:'dinner',name:'ข้าวกล้องผัดผัก',kcal:410,p:12,c:68,f:10},
-  {date:mkDate(2026,6,7),meal:'breakfast',name:'ข้าวต้มทะเล',kcal:310,p:22,c:40,f:6},
-  {date:mkDate(2026,6,7),meal:'lunch',name:'ข้าวผัดกะเพราไก่ไข่ดาว',kcal:580,p:30,c:60,f:22},
-  {date:mkDate(2026,6,7),meal:'dinner',name:'แกงจืดเต้าหู้หมู',kcal:240,p:18,c:10,f:12},
-  {date:mkDate(2026,6,7),meal:'snack',name:'ถั่วอบ 30g',kcal:170,p:6,c:8,f:14},
-  {date:mkDate(2026,6,6),meal:'breakfast',name:'สมูทตี้กล้วยนม',kcal:220,p:8,c:36,f:5},
-  {date:mkDate(2026,6,6),meal:'lunch',name:'ข้าวมันไก่',kcal:540,p:32,c:62,f:16},
-  {date:mkDate(2026,6,6),meal:'dinner',name:'ปลานึ่งมะนาว',kcal:280,p:38,c:8,f:10},
-];
-
-const EXERCISE_DATA = [
-  {date:mkDate(2026,6,10),type:'🏃 วิ่ง',min:45,kcal:320,km:6.2},
-  {date:mkDate(2026,6,10),type:'🏋️ เวทเทรนนิ่ง',min:30,kcal:180,km:null},
-  {date:mkDate(2026,6,9),type:'🚴 ปั่นจักรยาน',min:60,kcal:350,km:18.5},
-  {date:mkDate(2026,6,8),type:'🏃 วิ่ง',min:45,kcal:320,km:6.0},
-  {date:mkDate(2026,6,7),type:'🏋️ เวทเทรนนิ่ง',min:50,kcal:280,km:null},
-  {date:mkDate(2026,6,6),type:'🤸 โยคะ',min:40,kcal:160,km:null},
-  {date:mkDate(2026,6,4),type:'🏃 วิ่ง',min:50,kcal:360,km:7.1},
-  {date:mkDate(2026,6,3),type:'🏋️ เวทเทรนนิ่ง',min:45,kcal:260,km:null},
-  {date:mkDate(2026,6,2),type:'🚴 ปั่นจักรยาน',min:55,kcal:320,km:16.0},
-  {date:mkDate(2026,6,1),type:'🏃 วิ่ง',min:40,kcal:290,km:5.5},
-  {date:mkDate(2026,5,31),type:'🏊 ว่ายน้ำ',min:45,kcal:380,km:null},
-  {date:mkDate(2026,5,30),type:'🏋️ เวทเทรนนิ่ง',min:50,kcal:270,km:null},
-  {date:mkDate(2026,5,29),type:'🏃 วิ่ง',min:35,kcal:260,km:5.0},
-  {date:mkDate(2026,5,28),type:'🤸 โยคะ',min:60,kcal:190,km:null},
-  {date:mkDate(2026,5,27),type:'🚴 ปั่นจักรยาน',min:50,kcal:300,km:15.0},
-  {date:mkDate(2026,5,26),type:'🏃 วิ่ง',min:45,kcal:320,km:6.2},
-  {date:mkDate(2026,5,25),type:'🏋️ เวทเทรนนิ่ง',min:40,kcal:240,km:null},
-  {date:mkDate(2026,5,24),type:'🏸 แบดมินตัน',min:60,kcal:420,km:null},
-];
-
-const WATER_HISTORY = [
-  {date:mkDate(2026,6,10),ml:2100,goal:3000},
-  {date:mkDate(2026,6,9),ml:3100,goal:3000},
-  {date:mkDate(2026,6,8),ml:2400,goal:3000},
-  {date:mkDate(2026,6,7),ml:3000,goal:3000},
-  {date:mkDate(2026,6,6),ml:2900,goal:3000},
-  {date:mkDate(2026,6,5),ml:3000,goal:3000},
-  {date:mkDate(2026,6,4),ml:2600,goal:3000},
-  {date:mkDate(2026,6,3),ml:2800,goal:3000},
-  {date:mkDate(2026,6,2),ml:3200,goal:3000},
-  {date:mkDate(2026,6,1),ml:2500,goal:3000},
-  {date:mkDate(2026,5,31),ml:2200,goal:3000},
-  {date:mkDate(2026,5,30),ml:3000,goal:3000},
-  {date:mkDate(2026,5,29),ml:2900,goal:3000},
-  {date:mkDate(2026,5,28),ml:2700,goal:3000},
-  {date:mkDate(2026,5,27),ml:3100,goal:3000},
-  {date:mkDate(2026,5,26),ml:2400,goal:3000},
-  {date:mkDate(2026,5,25),ml:2800,goal:3000},
-];
-
-const MEAL_LABELS_TH = {breakfast:'มื้อเช้า',lunch:'มื้อเที่ยง',dinner:'มื้อเย็น',snack:'ของว่าง'};
-const MEAL_ICONS = {breakfast:'🌅',lunch:'☀️',dinner:'🌙',snack:'🍪'};
-const MEAL_TAGS = {breakfast:'tag-breakfast',lunch:'tag-lunch',dinner:'tag-dinner',snack:'tag-snack'};
-
-// ─── HISTORY RENDER ───
-function filterHistory(type) {
-  const cfg = {
-    weight:{from:'wf-from',to:'wf-to',count:'wf-count',list:'weight-history-list'},
-    food:{from:'ff-from',to:'ff-to',count:'ff-count',list:'food-history-list'},
-    exercise:{from:'ef-from',to:'ef-to',count:'ef-count',list:'exercise-history-list'},
-    water:{from:'wtf-from',to:'wtf-to',count:'wtf-count',list:'water-history-list'},
-  }[type];
-  const from = new Date(document.getElementById(cfg.from).value);
-  const to = new Date(document.getElementById(cfg.to).value);
-  to.setHours(23,59,59);
-
-  let data, html='', count=0;
-
-  if(type==='weight'){
-    data = WEIGHT_DATA.filter(r=>r.date>=from&&r.date<=to);
-    count=data.length;
-    if(!data.length){html=emptyHtml('ไม่มีข้อมูลในช่วงวันที่เลือก');} else {
-      let lastDay='';
-      data.forEach((r,i)=>{
-        const dayStr=fmtDate(r.date);
-        if(dayStr!==lastDay){html+=`<div class="hist-day-label">${dayStr}</div>`;lastDay=dayStr;}
-        const prev=data[i+1];
-        const diff=prev?Math.round((r.w-prev.w)*10)/10:null;
-        const diffHtml=diff!==null?`<span style="font-size:11px;font-weight:600;color:${diff<0?'var(--teal)':'var(--red)'}">${diff<0?'▼':'▲'} ${Math.abs(diff)}</span>`:'';
-        html+=`<div class="hist-row">
-          <div class="hist-row-icon li-teal">⚖️</div>
-          <div class="hist-row-body">
-            <div class="hist-row-main">${r.w} กก. ${diffHtml}</div>
-            <div class="hist-row-sub">BMI ${Math.round(r.w/((172/100)**2)*10)/10}${r.fat?` • ไขมัน ${r.fat}%`:''} ${r.waist?`• เอว ${r.waist} ซม.`:''} ${r.note?`• ${r.note}`:''}</div>
-          </div>
-          <button class="hist-row-del" onclick="window._deleteDoc('weight_logs','${r._id||''}')">🗑</button>
-        </div>`;
-      });
-    }
-  }
-
-  if(type==='food'){
-    data = FOOD_DATA.filter(r=>r.date>=from&&r.date<=to);
-    count=data.length;
-    if(!data.length){html=emptyHtml('ไม่มีข้อมูลในช่วงวันที่เลือก');} else {
-      let lastDay='';
-      data.forEach(r=>{
-        const dayStr=fmtDate(r.date);
-        if(dayStr!==lastDay){html+=`<div class="hist-day-label">${dayStr}</div>`;lastDay=dayStr;}
-        html+=`<div class="hist-row">
-          <div class="hist-row-icon li-${r.meal==='breakfast'?'teal':r.meal==='lunch'?'amber':r.meal==='dinner'?'blue':'coral'}">${MEAL_ICONS[r.meal]}</div>
-          <div class="hist-row-body">
-            <div class="hist-row-main">${r.name} <span class="tag ${MEAL_TAGS[r.meal]}">${MEAL_LABELS_TH[r.meal]}</span></div>
-            <div class="hist-row-sub">โปรตีน ${r.p}g • คาร์บ ${r.c}g • ไขมัน ${r.f}g</div>
-          </div>
-          <div class="hist-row-val"><div class="hist-row-val-main">${r.kcal}</div><div class="hist-row-val-sub">kcal</div></div>
-          <button class="hist-row-del" onclick="window._deleteDoc('food_logs','${r._id||''}')">🗑</button>
-        </div>`;
-      });
-    }
-  }
-
-  if(type==='exercise'){
-    data = EXERCISE_DATA.filter(r=>r.date>=from&&r.date<=to);
-    count=data.length;
-    if(!data.length){html=emptyHtml('ไม่มีข้อมูลในช่วงวันที่เลือก');} else {
-      let lastDay='';
-      data.forEach(r=>{
-        const dayStr=fmtDate(r.date);
-        if(dayStr!==lastDay){html+=`<div class="hist-day-label">${dayStr}</div>`;lastDay=dayStr;}
-        html+=`<div class="hist-row">
-          <div class="hist-row-icon li-teal" style="font-size:16px">${r.type.split(' ')[0]}</div>
-          <div class="hist-row-body">
-            <div class="hist-row-main">${r.type.split(' ').slice(1).join(' ')}</div>
-            <div class="hist-row-sub">${r.min} นาที${r.km?` • ${r.km} กม.`:''}</div>
-          </div>
-          <div class="hist-row-val"><div class="hist-row-val-main">${r.kcal}</div><div class="hist-row-val-sub">kcal</div></div>
-          <button class="hist-row-del" onclick="window._deleteDoc('exercise_logs','${r._id||''}')">🗑</button>
-        </div>`;
-      });
-    }
-  }
-
-  if(type==='water'){
-    data = WATER_HISTORY.filter(r=>r.date>=from&&r.date<=to);
-    count=data.length;
-    if(!data.length){html=emptyHtml('ไม่มีข้อมูลในช่วงวันที่เลือก');} else {
-      data.forEach(r=>{
-        const pct=Math.round(r.ml/r.goal*100);
-        const met=r.ml>=r.goal;
-        html+=`<div class="hist-row">
-          <div class="hist-row-icon li-blue">💧</div>
-          <div class="hist-row-body">
-            <div class="hist-row-main">${fmtDate(r.date)} <span style="font-size:11px;color:${met?'var(--teal)':'var(--amber)'};">${met?'✅ ครบเป้า':'⏳ ยังไม่ครบ'}</span></div>
-            <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
-              <div class="prog-bar" style="flex:1;margin:0"><div class="prog-fill ${met?'prog-teal':'prog-amber'}" style="width:${Math.min(pct,100)}%"></div></div>
-              <span style="font-size:11px;color:var(--text3);flex-shrink:0">${pct}%</span>
-            </div>
-          </div>
-          <div class="hist-row-val"><div class="hist-row-val-main">${(r.ml/1000).toFixed(1)}L</div><div class="hist-row-val-sub">จาก ${(r.goal/1000).toFixed(0)}L</div></div>
-        </div>`;
-      });
-    }
-  }
-
-  document.getElementById(cfg.list).innerHTML=html;
-  document.getElementById(cfg.count).textContent=`แสดง ${count} รายการ`;
-}
-
-function emptyHtml(msg){
-  return `<div class="hist-empty"><div class="hist-empty-icon">🔍</div>${msg}</div>`;
-}
-
-// Init histories with demo data if not logged in yet
-if(!window._uid){
-  ['weight','food','exercise','water'].forEach(t=>filterHistory(t));
-}
-
-// Close user menu when clicking outside
-document.addEventListener('click', e=>{
-  const menu = document.getElementById('user-menu');
-  if(menu && !e.target.closest('.avatar') && !e.target.closest('#user-menu')){
-    menu.style.display='none';
-  }
-});
-document.querySelector('.avatar')?.addEventListener('click', ()=>{
-  const menu=document.getElementById('user-menu');
-  if(menu) menu.style.display = menu.style.display==='none'?'block':'none';
+document.addEventListener('click',e=>{
+  if(!e.target.closest('#user-btn')&&!e.target.closest('#umenu'))
+    document.getElementById('umenu').classList.remove('open');
 });
 
-</script>
+// ── CONFIRM ──────────────────────────────────────────────────────────
+function showConfirm(title,body){
+  return new Promise(res=>{
+    _confirmRes=res;
+    document.getElementById('cm-title').textContent=title;
+    document.getElementById('cm-body').textContent=body;
+    document.getElementById('confirm-modal').classList.remove('hidden');
+  });
+}
+function closeConfirm(r){
+  document.getElementById('confirm-modal').classList.add('hidden');
+  if(_confirmRes){_confirmRes(r);_confirmRes=null;}
+}
 
-<!-- SETUP GUIDE (แสดงเฉพาะตอน config ยังไม่ได้ตั้งค่า) -->
-<div id="setup-guide" style="display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1A1D2E;color:#fff;border-radius:12px;padding:14px 20px;max-width:420px;width:90%;font-size:13px;z-index:500;box-shadow:0 8px 32px rgba(0,0,0,.3)">
-  <div style="font-weight:700;margin-bottom:8px">⚙️ ตั้งค่า Firebase ก่อนใช้งาน</div>
-  <div style="color:rgba(255,255,255,.75);line-height:1.7;font-size:12px">
-    1. ไปที่ <a href="https://console.firebase.google.com" target="_blank" style="color:#2DC78A">console.firebase.google.com</a><br>
-    2. สร้าง Project → เพิ่ม Web App → copy Config<br>
-    3. เปิด Firestore Database → เลือก Test mode<br>
-    4. เปิด Authentication → เปิด Google provider<br>
-    5. แก้ <code style="background:rgba(255,255,255,.15);padding:1px 5px;border-radius:4px">FB_CONFIG</code> ในไฟล์ HTML นี้
-  </div>
-  <button onclick="document.getElementById('setup-guide').style.display='none'" style="margin-top:10px;background:var(--teal);color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">ปิด</button>
-</div>
-<script>
-// Config ใส่แล้ว ไม่ต้อง show setup guide
+// ── UTILS ────────────────────────────────────────────────────────────
+function calcBMI(w,h){
+  const v=Math.round(w/((h/100)**2)*10)/10;
+  if(v<18.5)return{value:v,label:'น้ำหนักน้อย',color:'#185FA5'};
+  if(v<25)return{value:v,label:'ปกติ',color:'#1D9E75'};
+  if(v<30)return{value:v,label:'น้ำหนักเกิน',color:'#BA7517'};
+  return{value:v,label:'อ้วน',color:'#A32D2D'};
+}
+function calcPct(start,cur,goal){
+  if(start===goal)return 100;
+  return Math.min(100,Math.max(0,Math.round(((start-cur)/(start-goal))*100)));
+}
+function sleepHrs(s,w){
+  const[sh,sm]=s.split(':').map(Number);
+  const[wh,wm]=w.split(':').map(Number);
+  let m=(wh*60+wm)-(sh*60+sm);
+  if(m<0)m+=1440;
+  return Math.round(m/60*10)/10;
+}
+function formatDate(d){return new Date(d+'T00:00:00').toLocaleDateString('th-TH',{weekday:'long',day:'numeric',month:'long',year:'numeric'});}
+function getWeekNum(){const d=new Date();const s=new Date(d.getFullYear(),0,1);return Math.ceil(((d-s)/86400000+s.getDay()+1)/7);}
+function addWks(d,w){const r=new Date(d);r.setDate(r.getDate()+w*7);return r;}
+function mealLbl(m){return{breakfast:'เช้า',lunch:'กลางวัน',dinner:'เย็น',snack:'ว่าง'}[m]||m;}
+function actLbl(a){return{running:'วิ่ง',walking:'เดิน',cycling:'จักรยาน',swimming:'ว่ายน้ำ',weights:'เวทเทรนนิ่ง',hiit:'HIIT',yoga:'โยคะ',badminton:'แบดมินตัน',jumprope:'กระโดดเชือก'}[a]||a;}
 </script>
 </body>
 </html>
